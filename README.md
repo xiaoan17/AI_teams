@@ -2,6 +2,30 @@
 
 Local multi-agent terminal workspace.
 
+## Quick Start
+
+```bash
+# 1. Clone and install
+git clone https://github.com/xiaoan17/AI_teams.git
+cd AI_teams
+npm install
+
+# 2. Start the desktop app
+npm run dev
+
+# 3. Use the app
+# - Agents are listed in the left sidebar
+# - Type messages in the bottom composer
+# - Use @codex, @kimi, or @all to route messages
+# - Messages go to the focused agent panel if no @mention
+```
+
+**Requirements:** Python 3.10+, tmux, Node.js 20+, and agent CLIs (codex, claude, kimi, etc.)
+
+---
+
+## Overview
+
 The repository now has two layers:
 
 - M0 CLI prototype: `aiteam.py` uses tmux as the PTY host.
