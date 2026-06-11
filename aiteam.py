@@ -360,13 +360,13 @@ def cmd_start(args: argparse.Namespace) -> int:
         "agents": {},
     }
     first = agents[0]
-    first_cwd = str(Path(first.get("cwd") or root).expanduser())
+    first_cwd = str(resolve_agent_cwd(root, first.get("cwd")))
     run_tmux(["new-session", "-d", "-s", session, "-n", "agents", "-c", first_cwd, shell_command(first)])
     first_pane = run_tmux(["display-message", "-p", "-t", f"{session}:0.0", "#{pane_id}"]).stdout.strip()
     runtime["agents"][first["id"]] = setup_agent_runtime(root, first, first_pane)
 
     for agent in agents[1:]:
-        cwd = str(Path(agent.get("cwd") or root).expanduser())
+        cwd = str(resolve_agent_cwd(root, agent.get("cwd")))
         pane = run_tmux(
             ["split-window", "-P", "-F", "#{pane_id}", "-t", f"{session}:0", "-c", cwd, shell_command(agent)]
         ).stdout.strip()
@@ -621,6 +621,15 @@ def normalize_agent_cwd(root: Path, cwd: str | None) -> str:
     return str(path.resolve())
 
 
+def resolve_agent_cwd(root: Path, cwd: str | None) -> Path:
+    if not cwd:
+        return root
+    path = Path(cwd).expanduser()
+    if not path.is_absolute():
+        path = root / path
+    return path.resolve()
+
+
 def cmd_agent_add(args: argparse.Namespace) -> int:
     root = args.root.resolve()
     cfg = load_config(root)
@@ -719,7 +728,7 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     report(bool(agents), "agents_configured", f"{len(agents)} agent(s)")
     for agent in agents:
         agent_id = agent.get("id", "<missing>")
-        cwd = Path(agent.get("cwd") or root).expanduser()
+        cwd = resolve_agent_cwd(root, agent.get("cwd"))
         report(cwd.exists(), f"agent:{agent_id}:cwd", str(cwd))
         binary = command_binary(agent)
         enabled = agent.get("enabled", True)

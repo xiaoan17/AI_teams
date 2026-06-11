@@ -1,9 +1,9 @@
 {
   "workspace": {
     "name": "AI_teams",
-    "root": "/Users/anbc/Desktop/AI_teams",
-    "tmux_session": "aiteam-ai_teams-812528",
-    "created_at": "2026-06-11T02:57:56+00:00"
+    "root": ".",
+    "tmux_session": "aiteam-ai-teams",
+    "created_at": "2026-06-11T00:00:00Z"
   },
   "routing": {
     "default_agent": "codex",
@@ -15,12 +15,10 @@
     {
       "id": "codex",
       "name": "Codex",
-      "command": "/opt/homebrew/bin/codex",
-      "args": [
-        "--no-alt-screen"
-      ],
-      "cwd": "/Users/anbc/Desktop/AI_teams",
-      "enabled": true,
+      "command": "codex",
+      "args": [],
+      "cwd": ".",
+      "enabled": false,
       "permission_mode": "configure-before-start"
     },
     {
@@ -28,17 +26,17 @@
       "name": "Claude Code",
       "command": "claude",
       "args": [],
-      "cwd": "/Users/anbc/Desktop/AI_teams",
-      "enabled": true,
+      "cwd": ".",
+      "enabled": false,
       "permission_mode": "configure-before-start"
     },
     {
       "id": "kimi",
       "name": "Kimi",
-      "command": "/Users/anbc/.kimi-code/bin/kimi",
+      "command": "kimi",
       "args": [],
-      "cwd": "/Users/anbc/Desktop/AI_teams",
-      "enabled": true,
+      "cwd": ".",
+      "enabled": false,
       "permission_mode": "configure-before-start"
     }
   ]

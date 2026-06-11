@@ -7,21 +7,21 @@ import "./styles.css";
 
 const browserPreviewApi = {
   getWorkspace: async () => ({
-    root: "/Users/anbc/Desktop/AI_teams",
-    name: "AI_teams",
-    configPath: "/Users/anbc/Desktop/AI_teams/.aiteam/agents.json",
-    tasksPath: "/Users/anbc/Desktop/AI_teams/.aiteam/tasks",
-    docsPath: "/Users/anbc/Desktop/AI_teams/docs",
+    root: "/tmp/ai-teams-preview",
+    name: "ai-teams-preview",
+    configPath: "/tmp/ai-teams-preview/.aiteam/agents.json",
+    tasksPath: "/tmp/ai-teams-preview/.aiteam/tasks",
+    docsPath: "/tmp/ai-teams-preview/docs",
     recentWorkspaces: [
       {
-        root: "/Users/anbc/Desktop/AI_teams",
-        name: "AI_teams",
-        configPath: "/Users/anbc/Desktop/AI_teams/.aiteam/agents.json"
+        root: "/tmp/ai-teams-preview",
+        name: "ai-teams-preview",
+        configPath: "/tmp/ai-teams-preview/.aiteam/agents.json"
       },
       {
-        root: "/Users/anbc/Desktop/AI_teams/.aiteam-demo",
+        root: "/tmp/ai-teams-preview-demo",
         name: ".aiteam-demo",
-        configPath: "/Users/anbc/Desktop/AI_teams/.aiteam-demo/.aiteam/agents.json"
+        configPath: "/tmp/ai-teams-preview-demo/.aiteam/agents.json"
       }
     ]
   }),
@@ -37,33 +37,35 @@ const browserPreviewApi = {
   listAgents: async () => [
     {
       id: "codex",
-      name: "Codex",
-      command: "/opt/homebrew/bin/codex",
-      cwd: "/Users/anbc/Desktop/AI_teams",
+      name: "Codex Demo",
+      command: "/bin/cat",
+      cwd: "/tmp/ai-teams-preview",
       enabled: true,
+      backend: "direct-pty",
       status: "running_or_idle"
     },
     {
       id: "kimi",
-      name: "Kimi",
-      command: "/Users/anbc/.kimi-code/bin/kimi",
-      cwd: "/Users/anbc/Desktop/AI_teams",
+      name: "Kimi Demo",
+      command: "/bin/cat",
+      cwd: "/tmp/ai-teams-preview",
       enabled: true,
+      backend: "direct-pty",
       status: "waiting_input"
     }
   ],
   listDocuments: async (folder = "") => ({
-    root: "/Users/anbc/Desktop/AI_teams/docs",
+    root: "/tmp/ai-teams-preview/docs",
     folder,
     folders: [
-      { key: "", name: "docs", path: "/Users/anbc/Desktop/AI_teams/docs" },
-      { key: "features", name: "features", path: "/Users/anbc/Desktop/AI_teams/docs/features" }
+      { key: "", name: "docs", path: "/tmp/ai-teams-preview/docs" },
+      { key: "features", name: "features", path: "/tmp/ai-teams-preview/docs/features" }
     ],
     tree: {
       type: "folder",
       name: "docs",
       key: "",
-      path: "/Users/anbc/Desktop/AI_teams/docs",
+      path: "/tmp/ai-teams-preview/docs",
       relativePath: "docs",
       documentCount: 1,
       children: [
@@ -71,14 +73,14 @@ const browserPreviewApi = {
           type: "folder",
           name: "features",
           key: "features",
-          path: "/Users/anbc/Desktop/AI_teams/docs/features",
+          path: "/tmp/ai-teams-preview/docs/features",
           relativePath: "docs/features",
           documentCount: 1,
           children: [
             {
               type: "document",
               name: "20260611-broadcast-routing-and-claude-code.md",
-              path: "/Users/anbc/Desktop/AI_teams/docs/features/20260611-broadcast-routing-and-claude-code.md",
+              path: "/tmp/ai-teams-preview/docs/features/20260611-broadcast-routing-and-claude-code.md",
               relativePath: "docs/features/20260611-broadcast-routing-and-claude-code.md",
               folder: "features",
               updatedAt: new Date().toISOString(),
@@ -92,7 +94,7 @@ const browserPreviewApi = {
       {
         type: "document",
         name: "20260611-broadcast-routing-and-claude-code.md",
-        path: "/Users/anbc/Desktop/AI_teams/docs/features/20260611-broadcast-routing-and-claude-code.md",
+        path: "/tmp/ai-teams-preview/docs/features/20260611-broadcast-routing-and-claude-code.md",
         relativePath: "docs/features/20260611-broadcast-routing-and-claude-code.md",
         folder: "features",
         updatedAt: new Date().toISOString(),
@@ -104,6 +106,7 @@ const browserPreviewApi = {
   getAgentSnapshot: async () => ({ seq: 0, data: "", truncated: false }),
   startAgent: async (agentId) => ({ id: agentId, status: "running_or_idle" }),
   stopAgent: async (agentId) => ({ id: agentId, status: "stopped" }),
+  stopAllAgents: async () => {},
   sendInput: async () => {},
   resizeAgent: async () => {},
   routeMessage: async (message, targets) => ({ targets: targets.length ? targets : ["codex"], message }),
@@ -121,13 +124,15 @@ const statusLabels = {
   running_or_idle: "Ready",
   waiting_input: "Needs Input",
   exited: "Exited",
-  error: "Error"
+  error: "Error",
+  missing_runtime: "Missing Runtime",
+  pane_missing: "Pane Missing"
 };
 
 function statusClass(status) {
   if (status === "waiting_input") return "status-waiting";
   if (status === "running_or_idle" || status === "starting") return "status-running";
-  if (status === "exited" || status === "error") return "status-error";
+  if (status === "exited" || status === "error" || status === "missing_runtime" || status === "pane_missing") return "status-error";
   return "status-stopped";
 }
 
@@ -285,7 +290,7 @@ function DocumentTreeNode({
   );
 }
 
-function AgentTerminal({ agent, active, onFocus }) {
+function AgentTerminal({ agent, active, onFocus, onNotice }) {
   const containerRef = useRef(null);
   const termRef = useRef(null);
   const fitRef = useRef(null);
@@ -339,10 +344,9 @@ function AgentTerminal({ agent, active, onFocus }) {
       });
     };
     fitAndSync();
-    terminal.write(`AI Teams terminal for ${agent.name}\r\n`);
     terminal.onData((data) => {
       api.sendInput(agent.id, data).catch((error) => {
-        terminal.write(`\r\n[AI Teams] ${error.message}\r\n`);
+        onNotice?.(`${agent.name}: ${error.message}`);
       });
     });
     termRef.current = terminal;
@@ -358,7 +362,7 @@ function AgentTerminal({ agent, active, onFocus }) {
         if (disposed || !termRef.current) return;
         if (snapshot?.data) {
           if (snapshot.truncated) {
-            terminal.write("\r\n[AI Teams] Showing recent terminal output; older output is in the session log.\r\n");
+            onNotice?.(`Showing recent ${agent.name} terminal output; older output is in the session log.`);
           }
           terminal.write(snapshot.data);
         }
@@ -375,7 +379,7 @@ function AgentTerminal({ agent, active, onFocus }) {
         scheduleResize();
       } catch (error) {
         if (!disposed) {
-          terminal.write(`\r\n[AI Teams] Could not restore terminal output: ${error.message}\r\n`);
+          onNotice?.(`Could not restore ${agent.name} terminal output: ${error.message}`);
           snapshotReadyRef.current = true;
         }
       }
@@ -394,7 +398,7 @@ function AgentTerminal({ agent, active, onFocus }) {
       termRef.current = null;
       fitRef.current = null;
     };
-  }, [agent.id, agent.name]);
+  }, [agent.id, agent.name, onNotice]);
 
   useEffect(() => {
     if (!active || !termRef.current) return;
@@ -426,6 +430,10 @@ function AgentTerminal({ agent, active, onFocus }) {
       <header className="terminal-header">
         <div>
           <div className="terminal-name">{agent.name}</div>
+          <div className="terminal-meta">
+            {agent.backend || "direct-pty"}
+            {agent.pane ? ` ${agent.pane}` : ""}
+          </div>
         </div>
         <div className={`status-pill ${statusClass(agent.status)}`}>
           <span className="status-dot" />
@@ -880,6 +888,33 @@ function App() {
     }
   };
 
+  const startEnabled = async () => {
+    try {
+      for (const agent of visibleAgents.filter(stoppedOrExited)) {
+        const state = await api.startAgent(agent.id);
+        setAgents((current) => current.map((item) => (item.id === agent.id ? { ...item, ...state } : item)));
+      }
+      await refreshAgents();
+      setNotice("");
+    } catch (error) {
+      setNotice(error.message);
+    }
+  };
+
+  const stopEnabled = async () => {
+    try {
+      if (api.stopAllAgents) {
+        await api.stopAllAgents();
+      } else {
+        await Promise.all(visibleAgents.filter((agent) => !stoppedOrExited(agent)).map((agent) => api.stopAgent(agent.id)));
+      }
+      await refreshAgents();
+      setNotice("");
+    } catch (error) {
+      setNotice(error.message);
+    }
+  };
+
   const route = async (message, targets = [], options = {}) => {
     try {
       await api.routeMessage(message, targets, options);
@@ -926,7 +961,13 @@ function App() {
   }, []);
 
   const visibleAgents = agents.filter((agent) => agent.enabled);
-  const stoppedOrExited = (agent) => agent.status === "stopped" || agent.status === "exited" || agent.status === "error";
+  const stoppedOrExited = (agent) => (
+    agent.status === "stopped" ||
+    agent.status === "exited" ||
+    agent.status === "error" ||
+    agent.status === "missing_runtime" ||
+    agent.status === "pane_missing"
+  );
 
   return (
     <div className={`app-shell ${sidebarCollapsed ? "app-shell-sidebar-collapsed" : ""}`}>
@@ -943,8 +984,8 @@ function App() {
         onToggleDocumentPinned={toggleDocumentPinned}
         onStart={startAgent}
         onStop={stopAgent}
-        onStartEnabled={() => Promise.all(visibleAgents.filter(stoppedOrExited).map((agent) => startAgent(agent.id)))}
-        onStopEnabled={() => Promise.all(visibleAgents.filter((agent) => !stoppedOrExited(agent)).map((agent) => stopAgent(agent.id)))}
+        onStartEnabled={startEnabled}
+        onStopEnabled={stopEnabled}
         onOpen={(targetPath) => api.openPath(targetPath)}
         onInsertDocumentPath={insertDocumentPath}
       />
@@ -958,6 +999,7 @@ function App() {
               agent={agent}
               active={activeAgentId === agent.id}
               onFocus={() => setActiveAgentId(agent.id)}
+              onNotice={setNotice}
             />
           ))}
           {!visibleAgents.length ? (

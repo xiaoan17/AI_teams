@@ -8,16 +8,21 @@
     "dev": "concurrently -k \"vite --host 127.0.0.1\" \"wait-on http://127.0.0.1:5173 && electron .\"",
     "dev:demo": "python3 aiteam.py --root .aiteam-demo init --demo --force && AITEAMS_WORKSPACE_ROOT=.aiteam-demo concurrently -k \"vite --host 127.0.0.1\" \"wait-on http://127.0.0.1:5173 && electron .\"",
     "build": "vite build",
+    "smoke": "npm run smoke:tmux",
     "smoke:pty": "python3 aiteam.py --root .aiteam-demo init --demo --force && node scripts/desktop-pty-smoke.cjs",
+    "smoke:tmux": "node scripts/tmux-runtime-smoke.cjs",
+    "release:check": "node scripts/release-check.cjs",
     "preview": "vite preview --host 127.0.0.1",
     "doctor": "python3 aiteam.py doctor"
   },
   "dependencies": {
     "@xterm/addon-fit": "^0.10.0",
     "@xterm/xterm": "^5.5.0",
-    "node-pty": "^1.0.0",
     "react": "^19.2.1",
     "react-dom": "^19.2.1"
+  },
+  "optionalDependencies": {
+    "node-pty": "^1.1.0"
   },
   "devDependencies": {
     "@vitejs/plugin-react": "^5.1.1",

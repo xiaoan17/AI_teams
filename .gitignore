@@ -13,3 +13,6 @@ dist-electron/
 .aiteam/tmp/
 .aiteam/status/
 .aiteam/sessions/
+.aiteam/tasks/
+.aiteam/reviews/
+.aiteam/document-pins.json

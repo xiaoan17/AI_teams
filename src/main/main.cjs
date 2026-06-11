@@ -2,7 +2,6 @@ const { app, BrowserWindow, dialog, ipcMain, shell } = require("electron");
 const { execFileSync } = require("child_process");
 const fs = require("fs");
 const path = require("path");
-const pty = require("node-pty");
 
 const APP_ROOT = path.resolve(__dirname, "..", "..");
 app.setName("AI Teams");
@@ -10,6 +9,9 @@ const DEFAULT_WORKSPACE_ROOT = path.resolve(process.env.AITEAMS_WORKSPACE_ROOT |
 const MAX_RECENT_WORKSPACES = 10;
 const STATUS_BUFFER_CHARS = 12000;
 const TERMINAL_REPLAY_BUFFER_CHARS = 750000;
+const TERMINAL_SNAPSHOT_LINES = 2000;
+const TMUX_STREAM_CAPTURE_LINES = 400;
+const TMUX_POLL_INTERVAL_MS = 750;
 let WORKSPACE_ROOT = DEFAULT_WORKSPACE_ROOT;
 let AITEAM_DIR = "";
 let CONFIG_PATH = "";
@@ -18,6 +20,8 @@ let STATUS_DIR = "";
 let TASKS_DIR = "";
 let DOCS_DIR = "";
 let DOCUMENT_PINS_PATH = "";
+let RUNTIME_PATH = "";
+let TMP_DIR = "";
 
 const DOCUMENT_EXCLUDED_DIRS = new Set([
   ".git",
@@ -42,6 +46,7 @@ const waitingPatterns = [
 
 const agents = new Map();
 let mainWindow = null;
+let nodePty = null;
 
 function setWorkspaceRoot(root) {
   WORKSPACE_ROOT = path.resolve(root);
@@ -52,6 +57,8 @@ function setWorkspaceRoot(root) {
   TASKS_DIR = path.join(AITEAM_DIR, "tasks");
   DOCS_DIR = path.join(WORKSPACE_ROOT, "docs");
   DOCUMENT_PINS_PATH = path.join(AITEAM_DIR, "document-pins.json");
+  RUNTIME_PATH = path.join(AITEAM_DIR, "runtime.json");
+  TMP_DIR = path.join(AITEAM_DIR, "tmp");
 }
 
 setWorkspaceRoot(DEFAULT_WORKSPACE_ROOT);
@@ -223,6 +230,7 @@ function ensureWorkspaceDirs() {
   ensureDir(AITEAM_DIR);
   ensureDir(SESSIONS_DIR);
   ensureDir(STATUS_DIR);
+  ensureDir(TMP_DIR);
   ensureDir(DOCS_DIR);
 }
 
@@ -369,13 +377,13 @@ function shellCommand(agent) {
   return [agent.command, ...args].filter(Boolean).join(" ");
 }
 
-function enabledAgents() {
-  return loadConfig().agents.filter((agent) => agent.enabled !== false);
+function agentCwd(agent) {
+  const cwd = agent.cwd || WORKSPACE_ROOT;
+  return path.isAbsolute(cwd) ? cwd : path.resolve(WORKSPACE_ROOT, cwd);
 }
 
-function statusFor(agentId, patch = {}) {
-  const current = agents.get(agentId);
-  return statusForState(agentId, current, patch);
+function enabledAgents() {
+  return loadConfig().agents.filter((agent) => agent.enabled !== false);
 }
 
 function statusForState(agentId, state, patch = {}) {
@@ -384,6 +392,7 @@ function statusForState(agentId, state, patch = {}) {
     status: state?.status || "stopped",
     reason: state?.reason || "",
     pid: state?.ptyProcess?.pid || null,
+    backend: state?.backend || "direct-pty",
     updatedAt: nowIso(),
     ...patch
   };
@@ -430,7 +439,7 @@ function createSessionFiles(agent) {
       `- Agent: \`${agent.id}\``,
       `- Started: ${nowIso()}`,
       `- Command: \`${shellCommand(agent)}\``,
-      `- CWD: \`${agent.cwd || WORKSPACE_ROOT}\``,
+      `- CWD: \`${agentCwd(agent)}\``,
       `- Raw terminal log: \`${rawLog}\``,
       ""
     ].join("\n")
@@ -457,46 +466,79 @@ function appendBoundedText(current, data, limit) {
   return { text: next.slice(-limit), truncated: true };
 }
 
-function agentPublicState(agent) {
+function getNodePty() {
+  if (nodePty) {
+    return nodePty;
+  }
+  try {
+    nodePty = require("node-pty");
+    return nodePty;
+  } catch (error) {
+    throw new Error(
+      `node-pty is unavailable for direct PTY mode: ${error.message}. Run npm install again, or use the tmux backend.`
+    );
+  }
+}
+
+function shellQuote(value) {
+  const text = String(value ?? "");
+  if (/^[A-Za-z0-9_./:@%+=,-]+$/.test(text)) {
+    return text;
+  }
+  return `'${text.replace(/'/g, "'\\''")}'`;
+}
+
+function agentShellCommand(agent) {
+  const args = Array.isArray(agent.args) ? agent.args : [];
+  return [agent.command, ...args].filter(Boolean).map(shellQuote).join(" ");
+}
+
+function directAgentPublicState(agent) {
   const running = agents.get(agent.id);
   return {
     id: agent.id,
     name: agent.name || agent.id,
     command: shellCommand(agent),
-    cwd: agent.cwd || WORKSPACE_ROOT,
+    cwd: agentCwd(agent),
     enabled: agent.enabled !== false,
     status: running?.status || "stopped",
     reason: running?.reason || "",
     pid: running?.ptyProcess?.pid || null,
+    backend: "direct-pty",
+    pane: null,
     startedAt: running?.startedAt || null,
     markdownLog: running?.markdownLog || null,
     rawLog: running?.rawLog || null
   };
 }
 
-function agentTerminalSnapshot(agentId) {
+function directAgentTerminalSnapshot(agentId) {
   const state = agents.get(agentId);
   if (!state) {
     return {
       id: agentId,
       seq: 0,
       data: "",
-      truncated: false
+      source: "direct-pty-memory",
+      truncated: false,
+      backend: "direct-pty"
     };
   }
   return {
     id: agentId,
     seq: state.outputSeq || 0,
     data: state.replayBuffer || "",
-    truncated: Boolean(state.replayTruncated)
+    source: "direct-pty-memory",
+    truncated: Boolean(state.replayTruncated),
+    backend: "direct-pty"
   };
 }
 
-function listAgentStates() {
-  return loadConfig().agents.map(agentPublicState);
+function directListAgentStates() {
+  return loadConfig().agents.map(directAgentPublicState);
 }
 
-function startAgent(agentId) {
+function directStartAgent(agentId) {
   const config = loadConfig();
   const agent = config.agents.find((item) => item.id === agentId);
   if (!agent) {
@@ -507,7 +549,7 @@ function startAgent(agentId) {
   }
   const existing = agents.get(agentId);
   if (existing?.ptyProcess) {
-    return agentPublicState(agent);
+    return directAgentPublicState(agent);
   }
 
   ensureDir(SESSIONS_DIR);
@@ -516,11 +558,11 @@ function startAgent(agentId) {
   const args = Array.isArray(agent.args) ? agent.args : [];
   let ptyProcess;
   try {
-    ptyProcess = pty.spawn(agent.command, args, {
+    ptyProcess = getNodePty().spawn(agent.command, args, {
       name: "xterm-256color",
       cols: 96,
       rows: 28,
-      cwd: agent.cwd || WORKSPACE_ROOT,
+      cwd: agentCwd(agent),
       env: { ...process.env, TERM: "xterm-256color" }
     });
   } catch (error) {
@@ -541,6 +583,7 @@ function startAgent(agentId) {
     markdownLog: sessionFiles.markdownLog,
     statusDir: STATUS_DIR,
     workspaceRoot: WORKSPACE_ROOT,
+    backend: "direct-pty",
     status: "starting",
     reason: "process spawned",
     buffer: "",
@@ -564,8 +607,8 @@ function startAgent(agentId) {
     state.reason = inferred.reason;
     persistStatusForState(agentId, state);
     if (agents.get(agentId) === state) {
-      emit("agent:data", { id: agentId, data, seq: state.outputSeq });
-      emit("agent:status", agentPublicState(agent));
+      emit("agent:data", { id: agentId, data, seq: state.outputSeq, source: "direct-pty", backend: "direct-pty" });
+      emit("agent:status", directAgentPublicState(agent));
     }
   });
 
@@ -575,15 +618,15 @@ function startAgent(agentId) {
     state.ptyProcess = null;
     persistStatusForState(agentId, state);
     if (agents.get(agentId) === state) {
-      emit("agent:status", agentPublicState(agent));
+      emit("agent:status", directAgentPublicState(agent));
     }
   });
 
-  emit("agent:status", agentPublicState(agent));
-  return agentPublicState(agent);
+  emit("agent:status", directAgentPublicState(agent));
+  return directAgentPublicState(agent);
 }
 
-function stopAgent(agentId) {
+function directStopAgent(agentId) {
   const state = agents.get(agentId);
   if (!state?.ptyProcess) {
     return;
@@ -593,17 +636,17 @@ function stopAgent(agentId) {
   state.status = "stopped";
   state.reason = "stopped by user";
   persistStatusForState(agentId, state);
-  emit("agent:status", agentPublicState(state.agent));
+  emit("agent:status", directAgentPublicState(state.agent));
 }
 
-function stopAllAgents() {
+function directStopAllAgents() {
   for (const agentId of [...agents.keys()]) {
-    stopAgent(agentId);
+    directStopAgent(agentId);
   }
   agents.clear();
 }
 
-function writeToAgent(agentId, data) {
+function directWriteToAgent(agentId, data) {
   const state = agents.get(agentId);
   if (!state?.ptyProcess) {
     throw new Error(`Agent is not running: ${agentId}`);
@@ -611,9 +654,720 @@ function writeToAgent(agentId, data) {
   state.ptyProcess.write(data);
 }
 
-function pasteAndSubmitToAgent(agentId, message) {
+function directResizeAgent(agentId, cols, rows) {
+  const state = agents.get(agentId);
+  if (state?.ptyProcess && Number.isFinite(cols) && Number.isFinite(rows)) {
+    state.ptyProcess.resize(Math.max(20, cols), Math.max(5, rows));
+  }
+}
+
+function directPasteAndSubmitToAgent(agentId, message) {
   // Bracketed paste gives full-screen CLIs one atomic payload before Enter submits it.
-  writeToAgent(agentId, `\x1b[200~${message}\x1b[201~\r`);
+  directWriteToAgent(agentId, `\x1b[200~${message}\x1b[201~\r`);
+}
+
+function runtimeSession(config = loadConfig()) {
+  return config.workspace?.tmux_session || workspaceSessionName(WORKSPACE_ROOT);
+}
+
+function readRuntime() {
+  return readJson(RUNTIME_PATH, {});
+}
+
+function saveRuntime(runtime) {
+  writeJson(RUNTIME_PATH, runtime);
+}
+
+function normalizeRuntime(runtime, session) {
+  return {
+    runtime_schema_version: 1,
+    session,
+    backend: "tmux",
+    started_at: runtime?.started_at || nowIso(),
+    agents: runtime?.agents && typeof runtime.agents === "object" ? runtime.agents : {}
+  };
+}
+
+function tmuxDetail(error) {
+  const stdout = Buffer.isBuffer(error.stdout) ? error.stdout.toString("utf8") : String(error.stdout || "");
+  const stderr = Buffer.isBuffer(error.stderr) ? error.stderr.toString("utf8") : String(error.stderr || "");
+  return stderr.trim() || stdout.trim() || error.message;
+}
+
+function runTmux(args, options = {}) {
+  const check = options.check !== false;
+  try {
+    const stdout = execFileSync("tmux", args, {
+      encoding: "utf8",
+      input: options.input,
+      stdio: ["pipe", "pipe", "pipe"]
+    });
+    return { status: 0, stdout, stderr: "" };
+  } catch (error) {
+    const stdout = Buffer.isBuffer(error.stdout) ? error.stdout.toString("utf8") : String(error.stdout || "");
+    const stderr = Buffer.isBuffer(error.stderr) ? error.stderr.toString("utf8") : String(error.stderr || "");
+    if (check) {
+      throw new Error(`tmux ${args.join(" ")} failed: ${tmuxDetail(error)}`);
+    }
+    return { status: error.status || 1, stdout, stderr };
+  }
+}
+
+function tmuxAvailable() {
+  return runTmux(["-V"], { check: false }).status === 0;
+}
+
+function tmuxHasSession(session) {
+  return runTmux(["has-session", "-t", session], { check: false }).status === 0;
+}
+
+function tmuxPaneField(pane, field) {
+  const proc = runTmux(["display-message", "-p", "-t", pane, field], { check: false });
+  if (proc.status !== 0) {
+    return null;
+  }
+  return proc.stdout.trim();
+}
+
+function tmuxPaneDead(pane) {
+  const value = tmuxPaneField(pane, "#{pane_dead}");
+  if (value === null) {
+    return null;
+  }
+  return value === "1";
+}
+
+function tmuxCapturePane(pane, lines = TERMINAL_SNAPSHOT_LINES) {
+  return runTmux(["capture-pane", "-p", "-e", "-J", "-S", `-${lines}`, "-t", pane]).stdout;
+}
+
+function sleepSync(ms) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+function tailFile(file, maxChars = TERMINAL_REPLAY_BUFFER_CHARS) {
+  if (!file || !fs.existsSync(file)) {
+    return "";
+  }
+  const data = fs.readFileSync(file, "utf8");
+  return data.length > maxChars ? data.slice(-maxChars) : data;
+}
+
+function setupTmuxAgentRuntime(root, agent, pane) {
+  const sessionFiles = createSessionFiles(agent);
+  runTmux(["pipe-pane", "-o", "-t", pane, `cat >> ${shellQuote(sessionFiles.rawLog)}`]);
+  return {
+    pane,
+    raw_log: sessionFiles.rawLog,
+    markdown_log: sessionFiles.markdownLog,
+    started_at: nowIso()
+  };
+}
+
+function createTmuxSession(config) {
+  const session = runtimeSession(config);
+  const enabledList = config.agents.filter((agent) => agent.enabled !== false);
+  if (!enabledList.length) {
+    throw new Error("No enabled agents. Enable at least one agent before starting.");
+  }
+
+  const runtime = normalizeRuntime({}, session);
+  const [first, ...rest] = enabledList;
+  runTmux([
+    "new-session",
+    "-d",
+    "-s",
+    session,
+    "-n",
+    "agents",
+    "-c",
+    agentCwd(first),
+    agentShellCommand(first)
+  ]);
+  const firstPane = runTmux(["display-message", "-p", "-t", `${session}:0.0`, "#{pane_id}"]).stdout.trim();
+  runtime.agents[first.id] = setupTmuxAgentRuntime(WORKSPACE_ROOT, first, firstPane);
+
+  for (const agent of rest) {
+    const pane = runTmux([
+      "split-window",
+      "-P",
+      "-F",
+      "#{pane_id}",
+      "-t",
+      `${session}:0`,
+      "-c",
+      agentCwd(agent),
+      agentShellCommand(agent)
+    ]).stdout.trim();
+    runtime.agents[agent.id] = setupTmuxAgentRuntime(WORKSPACE_ROOT, agent, pane);
+  }
+
+  runTmux(["select-layout", "-t", `${session}:0`, "tiled"], { check: false });
+  saveRuntime(runtime);
+  return runtime;
+}
+
+function ensureTmuxAgentPane(config, agent, runtime) {
+  const session = runtimeSession(config);
+  const current = runtime.agents?.[agent.id];
+  const currentDead = current?.pane ? tmuxPaneDead(current.pane) : null;
+  if (current?.pane && currentDead === false) {
+    return runtime;
+  }
+  if (current?.pane && currentDead === true) {
+    runTmux(["kill-pane", "-t", current.pane], { check: false });
+  }
+
+  const pane = runTmux([
+    "split-window",
+    "-P",
+    "-F",
+    "#{pane_id}",
+    "-t",
+    `${session}:0`,
+    "-c",
+    agentCwd(agent),
+    agentShellCommand(agent)
+  ]).stdout.trim();
+  runtime.agents[agent.id] = setupTmuxAgentRuntime(WORKSPACE_ROOT, agent, pane);
+  runTmux(["select-layout", "-t", `${session}:0`, "tiled"], { check: false });
+  saveRuntime(runtime);
+  return runtime;
+}
+
+function tmuxAgentPublicState(agent, context = {}) {
+  const config = context.config || loadConfig();
+  const runtime = context.runtime || readRuntime();
+  const session = runtime.session || runtimeSession(config);
+  const runtimeAgent = runtime.agents?.[agent.id] || {};
+  const base = {
+    id: agent.id,
+    name: agent.name || agent.id,
+    command: shellCommand(agent),
+    cwd: agentCwd(agent),
+    enabled: agent.enabled !== false,
+    status: "stopped",
+    reason: "",
+    pid: null,
+    backend: "tmux",
+    pane: runtimeAgent.pane || null,
+    startedAt: runtimeAgent.started_at || null,
+    markdownLog: runtimeAgent.markdown_log || null,
+    rawLog: runtimeAgent.raw_log || null
+  };
+
+  if (agent.enabled === false) {
+    return base;
+  }
+  if (!tmuxAvailable()) {
+    return { ...base, status: "error", reason: "tmux is not installed or not on PATH" };
+  }
+  if (!tmuxHasSession(session)) {
+    return { ...base, status: "stopped", reason: `tmux session is not running: ${session}` };
+  }
+  if (runtimeAgent.stopped && !runtimeAgent.pane) {
+    return { ...base, status: "stopped", reason: runtimeAgent.reason || "stopped by user" };
+  }
+  if (!runtimeAgent.pane) {
+    return { ...base, status: "missing_runtime", reason: "No tmux pane recorded in .aiteam/runtime.json" };
+  }
+
+  const dead = context.dead ?? tmuxPaneDead(runtimeAgent.pane);
+  if (dead === null) {
+    return { ...base, status: "pane_missing", reason: `Recorded tmux pane is missing: ${runtimeAgent.pane}` };
+  }
+  if (dead) {
+    return { ...base, status: "exited", reason: "tmux pane process has exited" };
+  }
+
+  const capture = context.capture ?? (() => {
+    try {
+      return tmuxCapturePane(runtimeAgent.pane, 120);
+    } catch (_error) {
+      return tailFile(runtimeAgent.raw_log, STATUS_BUFFER_CHARS);
+    }
+  })();
+  const inferred = inferStatus(capture || "");
+  return { ...base, status: inferred.status, reason: inferred.reason };
+}
+
+let tmuxPollTimer = null;
+let tmuxStreamState = new Map();
+
+function findOverlap(previous, next) {
+  const max = Math.min(previous.length, next.length, 20000);
+  for (let size = max; size > 0; size -= 1) {
+    if (previous.slice(-size) === next.slice(0, size)) {
+      return size;
+    }
+  }
+  return 0;
+}
+
+function pollTmuxBackend() {
+  if (selectedBackendName() !== "tmux") {
+    stopTmuxPolling();
+    return;
+  }
+  let config;
+  try {
+    config = loadConfig();
+  } catch (_error) {
+    return;
+  }
+  const session = runtimeSession(config);
+  if (!tmuxHasSession(session)) {
+    for (const agent of config.agents) {
+      emit("agent:status", tmuxAgentPublicState(agent, { config }));
+    }
+    return;
+  }
+  const runtime = readRuntime();
+  for (const agent of config.agents.filter((item) => item.enabled !== false)) {
+    const runtimeAgent = runtime.agents?.[agent.id];
+    if (!runtimeAgent?.pane) {
+      emit("agent:status", tmuxAgentPublicState(agent, { config, runtime }));
+      continue;
+    }
+    const dead = tmuxPaneDead(runtimeAgent.pane);
+    if (dead !== false) {
+      const publicState = tmuxAgentPublicState(agent, { config, runtime, dead });
+      persistStatus(agent.id, publicState);
+      emit("agent:status", publicState);
+      continue;
+    }
+
+    let capture = "";
+    try {
+      capture = tmuxCapturePane(runtimeAgent.pane, TMUX_STREAM_CAPTURE_LINES);
+    } catch (_error) {
+      capture = tailFile(runtimeAgent.raw_log, TERMINAL_REPLAY_BUFFER_CHARS);
+    }
+    const stream = tmuxStreamState.get(agent.id) || { seq: 0, lastText: null, statusKey: "" };
+    if (stream.lastText === null) {
+      stream.lastText = capture;
+    } else if (capture !== stream.lastText) {
+      let chunk = "";
+      if (capture.startsWith(stream.lastText)) {
+        chunk = capture.slice(stream.lastText.length);
+      } else {
+        const overlap = findOverlap(stream.lastText, capture);
+        chunk = overlap ? capture.slice(overlap) : "";
+      }
+      stream.lastText = capture;
+      if (chunk) {
+        stream.seq += 1;
+        emit("agent:data", {
+          id: agent.id,
+          data: chunk,
+          seq: stream.seq,
+          source: "tmux-capture",
+          backend: "tmux"
+        });
+      }
+    }
+
+    const publicState = tmuxAgentPublicState(agent, { config, runtime, dead: false, capture });
+    const statusKey = `${publicState.status}:${publicState.reason}:${publicState.pane || ""}`;
+    if (statusKey !== stream.statusKey) {
+      stream.statusKey = statusKey;
+      persistStatus(agent.id, publicState);
+      emit("agent:status", publicState);
+    }
+    tmuxStreamState.set(agent.id, stream);
+  }
+}
+
+function ensureTmuxPolling() {
+  if (tmuxPollTimer) {
+    return;
+  }
+  tmuxPollTimer = setInterval(pollTmuxBackend, TMUX_POLL_INTERVAL_MS);
+  pollTmuxBackend();
+}
+
+function stopTmuxPolling() {
+  if (tmuxPollTimer) {
+    clearInterval(tmuxPollTimer);
+    tmuxPollTimer = null;
+  }
+  tmuxStreamState.clear();
+}
+
+function tmuxListAgentStates() {
+  const config = loadConfig();
+  if (tmuxHasSession(runtimeSession(config))) {
+    ensureTmuxPolling();
+  }
+  const runtime = readRuntime();
+  return config.agents.map((agent) => {
+    const publicState = tmuxAgentPublicState(agent, { config, runtime });
+    if (agent.enabled !== false) {
+      persistStatus(agent.id, publicState);
+    }
+    return publicState;
+  });
+}
+
+function tmuxStartAgent(agentId) {
+  const config = loadConfig();
+  const agent = config.agents.find((item) => item.id === agentId);
+  if (!agent) {
+    throw new Error(`Unknown agent: ${agentId}`);
+  }
+  if (agent.enabled === false) {
+    throw new Error(`Agent is disabled: ${agentId}`);
+  }
+  if (!tmuxAvailable()) {
+    const status = {
+      id: agentId,
+      status: "error",
+      reason: "tmux is required for durable terminal sessions but was not found on PATH",
+      pid: null,
+      backend: "tmux",
+      updatedAt: nowIso()
+    };
+    persistStatus(agentId, status);
+    throw new Error(status.reason);
+  }
+
+  const session = runtimeSession(config);
+  let runtime;
+  if (!tmuxHasSession(session)) {
+    runtime = createTmuxSession(config);
+  } else {
+    runtime = normalizeRuntime(readRuntime(), session);
+    runtime = ensureTmuxAgentPane(config, agent, runtime);
+  }
+
+  ensureTmuxPolling();
+  for (const configuredAgent of config.agents) {
+    emit("agent:status", tmuxAgentPublicState(configuredAgent, { config, runtime }));
+  }
+  return tmuxAgentPublicState(agent, { config, runtime });
+}
+
+function tmuxStopAgent(agentId) {
+  const config = loadConfig();
+  const agent = config.agents.find((item) => item.id === agentId);
+  if (!agent) {
+    throw new Error(`Unknown agent: ${agentId}`);
+  }
+  const runtime = readRuntime();
+  const pane = runtime.agents?.[agentId]?.pane;
+  if (pane) {
+    runTmux(["kill-pane", "-t", pane], { check: false });
+  }
+  runtime.agents = runtime.agents || {};
+  runtime.agents[agentId] = {
+    ...(runtime.agents[agentId] || {}),
+    pane: null,
+    stopped: true,
+    reason: "stopped by user",
+    stopped_at: nowIso()
+  };
+  saveRuntime(runtime);
+  const status = {
+    ...tmuxAgentPublicState(agent, { config, runtime }),
+    status: "stopped",
+    reason: "stopped by user",
+    updatedAt: nowIso()
+  };
+  persistStatus(agentId, status);
+  tmuxStreamState.delete(agentId);
+  emit("agent:status", status);
+}
+
+function tmuxStopAllAgents() {
+  const config = loadConfig();
+  const session = runtimeSession(config);
+  if (tmuxHasSession(session)) {
+    runTmux(["kill-session", "-t", session], { check: false });
+  }
+  stopTmuxPolling();
+  for (const agent of config.agents) {
+    const status = {
+      ...tmuxAgentPublicState(agent, { config, runtime: readRuntime() }),
+      status: "stopped",
+      reason: "stopped by user",
+      updatedAt: nowIso()
+    };
+    persistStatus(agent.id, status);
+    emit("agent:status", status);
+  }
+}
+
+function tmuxPasteText(pane, text) {
+  ensureDir(TMP_DIR);
+  const tmp = path.join(TMP_DIR, `paste-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}.txt`);
+  const bufferName = `aiteam-${process.pid}-${Date.now()}`;
+  fs.writeFileSync(tmp, text);
+  try {
+    runTmux(["load-buffer", "-b", bufferName, tmp]);
+    runTmux(["paste-buffer", "-b", bufferName, "-t", pane, "-p"]);
+  } finally {
+    runTmux(["delete-buffer", "-b", bufferName], { check: false });
+    fs.rmSync(tmp, { force: true });
+  }
+}
+
+function tmuxPasteAndEnter(pane, text, options = {}) {
+  tmuxPasteText(pane, text);
+  const verify = options.verify !== false;
+  if (verify) {
+    const timeoutMs = Math.max(0, Number(options.timeoutSeconds || 1.5) * 1000);
+    const deadline = Date.now() + timeoutMs;
+    const needle = text.split(/\s+/).filter(Boolean).join(" ");
+    let verified = !needle;
+    while (!verified && Date.now() < deadline) {
+      const captured = tmuxCapturePane(pane, 80).split(/\s+/).filter(Boolean).join(" ");
+      verified = captured.includes(needle);
+      if (!verified) {
+        sleepSync(120);
+      }
+    }
+    if (!verified) {
+      return false;
+    }
+  }
+  runTmux(["send-keys", "-t", pane, "C-m"]);
+  return true;
+}
+
+function tmuxWriteInput(agentId, data) {
+  const config = loadConfig();
+  const runtime = readRuntime();
+  const pane = runtime.agents?.[agentId]?.pane;
+  if (!pane || tmuxPaneDead(pane) !== false) {
+    throw new Error(`Agent is not running: ${agentId}`);
+  }
+  const keyMap = new Map([
+    ["\r", "C-m"],
+    ["\n", "C-m"],
+    ["\u007f", "BSpace"],
+    ["\x03", "C-c"],
+    ["\x04", "C-d"],
+    ["\x1b[A", "Up"],
+    ["\x1b[B", "Down"],
+    ["\x1b[C", "Right"],
+    ["\x1b[D", "Left"]
+  ]);
+  const mapped = keyMap.get(data);
+  if (mapped) {
+    runTmux(["send-keys", "-t", pane, mapped]);
+    return;
+  }
+  tmuxPasteText(pane, data);
+  const agent = config.agents.find((item) => item.id === agentId);
+  if (agent) {
+    emit("agent:status", tmuxAgentPublicState(agent, { config, runtime }));
+  }
+}
+
+function tmuxResizeAgent(agentId, cols, rows) {
+  if (!Number.isFinite(cols) || !Number.isFinite(rows)) {
+    return;
+  }
+  const runtime = readRuntime();
+  const pane = runtime.agents?.[agentId]?.pane;
+  if (!pane) {
+    return;
+  }
+  runTmux(["resize-pane", "-t", pane, "-x", String(Math.max(20, cols)), "-y", String(Math.max(5, rows))], { check: false });
+}
+
+function tmuxAgentTerminalSnapshot(agentId) {
+  const config = loadConfig();
+  const runtime = readRuntime();
+  const runtimeAgent = runtime.agents?.[agentId];
+  const stream = tmuxStreamState.get(agentId) || { seq: 0, lastText: null, statusKey: "" };
+  if (!runtimeAgent?.pane || tmuxPaneDead(runtimeAgent.pane) === null) {
+    return {
+      id: agentId,
+      seq: stream.seq,
+      data: tailFile(runtimeAgent?.raw_log, TERMINAL_REPLAY_BUFFER_CHARS),
+      source: runtimeAgent?.raw_log ? "raw-log" : "empty",
+      truncated: false,
+      backend: "tmux"
+    };
+  }
+
+  let data = "";
+  let source = "tmux-capture";
+  let truncated = false;
+  try {
+    data = tmuxCapturePane(runtimeAgent.pane);
+  } catch (_error) {
+    data = tailFile(runtimeAgent.raw_log, TERMINAL_REPLAY_BUFFER_CHARS);
+    source = "raw-log";
+    truncated = Boolean(data);
+  }
+  stream.lastText = data;
+  tmuxStreamState.set(agentId, stream);
+  const agent = config.agents.find((item) => item.id === agentId);
+  if (agent) {
+    persistStatus(agentId, tmuxAgentPublicState(agent, { config, runtime, dead: false, capture: data }));
+  }
+  return {
+    id: agentId,
+    seq: stream.seq,
+    data,
+    source,
+    truncated,
+    backend: "tmux"
+  };
+}
+
+function directPublicState(agentId) {
+  const agent = loadConfig().agents.find((item) => item.id === agentId);
+  return agent ? directAgentPublicState(agent) : null;
+}
+
+function directPreflightRoute(targets) {
+  const notRunning = targets.filter((target) => !agents.get(target)?.ptyProcess);
+  if (notRunning.length) {
+    throw new Error(
+      `Cannot send broadcast. Not running: ${notRunning.join(", ")}. Start the agent or disable it.`
+    );
+  }
+}
+
+function tmuxPublicState(agentId) {
+  const config = loadConfig();
+  const agent = config.agents.find((item) => item.id === agentId);
+  return agent ? tmuxAgentPublicState(agent, { config, runtime: readRuntime() }) : null;
+}
+
+function tmuxPreflightRoute(targets) {
+  const config = loadConfig();
+  const runtime = readRuntime();
+  const session = runtimeSession(config);
+  if (!tmuxHasSession(session)) {
+    throw new Error(`Cannot send broadcast. tmux session is not running: ${session}. Start the agents first.`);
+  }
+
+  const failures = [];
+  for (const target of targets) {
+    const pane = runtime.agents?.[target]?.pane;
+    if (!pane) {
+      failures.push(`${target}: no runtime pane recorded`);
+      continue;
+    }
+    const dead = tmuxPaneDead(pane);
+    if (dead === null) {
+      failures.push(`${target}: recorded pane is missing`);
+    } else if (dead) {
+      failures.push(`${target}: pane process has exited`);
+    }
+  }
+  if (failures.length) {
+    throw new Error(
+      `Cannot send broadcast. Not running: ${failures.join("; ")}. Start the agent or disable it.`
+    );
+  }
+}
+
+function tmuxPasteAndSubmitAgent(agentId, message) {
+  const config = loadConfig();
+  const runtime = readRuntime();
+  const pane = runtime.agents?.[agentId]?.pane;
+  if (!pane || tmuxPaneDead(pane) !== false) {
+    throw new Error(`Agent is not running: ${agentId}`);
+  }
+  const verify = config.routing?.verify_injection !== false;
+  const timeoutSeconds = Number(config.routing?.verify_timeout_seconds || 1.5);
+  const ok = tmuxPasteAndEnter(pane, message, { verify, timeoutSeconds });
+  if (!ok) {
+    throw new Error("injection not verified");
+  }
+}
+
+const directPtyBackend = {
+  name: "direct-pty",
+  listAgents: directListAgentStates,
+  startAgent: directStartAgent,
+  stopAgent: directStopAgent,
+  stopAll: directStopAllAgents,
+  writeInput: directWriteToAgent,
+  resizeAgent: directResizeAgent,
+  snapshot: directAgentTerminalSnapshot,
+  preflightRoute: directPreflightRoute,
+  pasteAndSubmit: directPasteAndSubmitToAgent,
+  publicState: directPublicState
+};
+
+const tmuxBackend = {
+  name: "tmux",
+  listAgents: tmuxListAgentStates,
+  startAgent: tmuxStartAgent,
+  stopAgent: tmuxStopAgent,
+  stopAll: tmuxStopAllAgents,
+  writeInput: tmuxWriteInput,
+  resizeAgent: tmuxResizeAgent,
+  snapshot: tmuxAgentTerminalSnapshot,
+  preflightRoute: tmuxPreflightRoute,
+  pasteAndSubmit: tmuxPasteAndSubmitAgent,
+  publicState: tmuxPublicState
+};
+
+function isDemoWorkspace() {
+  try {
+    const config = loadConfig();
+    return config.agents?.length > 0 && config.agents.every((agent) => agent.permission_mode === "demo-echo");
+  } catch (_error) {
+    return false;
+  }
+}
+
+function selectedBackendName() {
+  const configured = String(process.env.AITEAMS_TERMINAL_BACKEND || "").trim();
+  if (configured === "tmux" || configured === "direct-pty") {
+    return configured;
+  }
+  if (isDemoWorkspace()) {
+    return tmuxAvailable() ? "tmux" : "direct-pty";
+  }
+  return "tmux";
+}
+
+function getTerminalBackend() {
+  return selectedBackendName() === "tmux" ? tmuxBackend : directPtyBackend;
+}
+
+function listAgentStates() {
+  return getTerminalBackend().listAgents();
+}
+
+function agentTerminalSnapshot(agentId) {
+  return getTerminalBackend().snapshot(agentId);
+}
+
+function startAgent(agentId) {
+  return getTerminalBackend().startAgent(agentId);
+}
+
+function stopAgent(agentId) {
+  return getTerminalBackend().stopAgent(agentId);
+}
+
+function stopAllAgents() {
+  return getTerminalBackend().stopAll();
+}
+
+function writeToAgent(agentId, data) {
+  return getTerminalBackend().writeInput(agentId, data);
+}
+
+function resizeAgent(agentId, cols, rows) {
+  return getTerminalBackend().resizeAgent(agentId, cols, rows);
+}
+
+function releaseCurrentWorkspaceBackend() {
+  if (selectedBackendName() === "direct-pty") {
+    directStopAllAgents();
+  } else {
+    stopTmuxPolling();
+  }
 }
 
 function routeTargets(message, explicitTargets = []) {
@@ -662,22 +1416,17 @@ function routeMessage(message, explicitTargets = [], options = {}) {
   const finalMessage = options.taskPath
     ? `${taskHandoff(options.taskPath)} 用户补充：${routedMessage}`
     : routedMessage;
+  const backend = getTerminalBackend();
 
-  // Preflight: ensure every target has a running PTY before writing to any
-  const notRunning = targets.filter((target) => !agents.get(target)?.ptyProcess);
-  if (notRunning.length) {
-    throw new Error(
-      `Cannot send broadcast. Not running: ${notRunning.join(", ")}. Start the agent or disable it.`
-    );
-  }
+  backend.preflightRoute(targets);
 
   const results = [];
   for (const target of targets) {
     try {
-      pasteAndSubmitToAgent(target, finalMessage);
-      const state = agents.get(target);
-      if (state?.markdownLog) {
-        appendMarkdown(state.markdownLog, "User Message", finalMessage);
+      backend.pasteAndSubmit(target, finalMessage);
+      const publicState = backend.publicState(target);
+      if (publicState?.markdownLog) {
+        appendMarkdown(publicState.markdownLog, "User Message", finalMessage);
       }
       results.push({ id: target, status: "sent" });
     } catch (error) {
@@ -840,7 +1589,7 @@ function switchWorkspace(targetRoot) {
     rememberWorkspace(nextRoot);
     return workspaceInfo();
   }
-  stopAllAgents();
+  releaseCurrentWorkspaceBackend();
   setWorkspaceRoot(nextRoot);
   ensureWorkspaceDirs();
   rememberWorkspace(nextRoot);
@@ -904,7 +1653,7 @@ app.on("window-all-closed", () => {
 });
 
 app.on("before-quit", () => {
-  stopAllAgents();
+  releaseCurrentWorkspaceBackend();
 });
 
 ipcMain.handle("workspace:get", () => workspaceInfo());
@@ -915,13 +1664,9 @@ ipcMain.handle("agents:list", () => listAgentStates());
 ipcMain.handle("agents:snapshot", (_event, agentId) => agentTerminalSnapshot(agentId));
 ipcMain.handle("agents:start", (_event, agentId) => startAgent(agentId));
 ipcMain.handle("agents:stop", (_event, agentId) => stopAgent(agentId));
+ipcMain.handle("agents:stopAll", () => stopAllAgents());
 ipcMain.handle("agents:input", (_event, agentId, data) => writeToAgent(agentId, data));
-ipcMain.handle("agents:resize", (_event, agentId, cols, rows) => {
-  const state = agents.get(agentId);
-  if (state?.ptyProcess && Number.isFinite(cols) && Number.isFinite(rows)) {
-    state.ptyProcess.resize(Math.max(20, cols), Math.max(5, rows));
-  }
-});
+ipcMain.handle("agents:resize", (_event, agentId, cols, rows) => resizeAgent(agentId, cols, rows));
 ipcMain.handle("route:send", (_event, message, explicitTargets = [], options = {}) => routeMessage(message, explicitTargets, options));
 ipcMain.handle("tasks:list", () => listTasks());
 ipcMain.handle("documents:list", (_event, folder = "") => listDocuments(folder));

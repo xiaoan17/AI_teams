@@ -10,6 +10,7 @@ contextBridge.exposeInMainWorld("aiTeams", {
   getAgentSnapshot: (agentId) => ipcRenderer.invoke("agents:snapshot", agentId),
   startAgent: (agentId) => ipcRenderer.invoke("agents:start", agentId),
   stopAgent: (agentId) => ipcRenderer.invoke("agents:stop", agentId),
+  stopAllAgents: () => ipcRenderer.invoke("agents:stopAll"),
   sendInput: (agentId, data) => ipcRenderer.invoke("agents:input", agentId, data),
   resizeAgent: (agentId, cols, rows) => ipcRenderer.invoke("agents:resize", agentId, cols, rows),
   routeMessage: (message, targets = [], options = {}) => ipcRenderer.invoke("route:send", message, targets, options),
