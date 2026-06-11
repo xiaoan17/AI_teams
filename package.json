@@ -8,9 +8,10 @@
     "dev": "concurrently -k \"vite --host 127.0.0.1\" \"wait-on http://127.0.0.1:5173 && electron .\"",
     "dev:demo": "python3 aiteam.py --root .aiteam-demo init --demo --force && AITEAMS_WORKSPACE_ROOT=.aiteam-demo concurrently -k \"vite --host 127.0.0.1\" \"wait-on http://127.0.0.1:5173 && electron .\"",
     "build": "vite build",
-    "smoke": "npm run smoke:tmux",
+    "smoke": "npm run smoke:tmux && npm run smoke:tmux-view",
     "smoke:pty": "python3 aiteam.py --root .aiteam-demo init --demo --force && node scripts/desktop-pty-smoke.cjs",
     "smoke:tmux": "node scripts/tmux-runtime-smoke.cjs",
+    "smoke:tmux-view": "node scripts/tmux-view-smoke.cjs",
     "release:check": "node scripts/release-check.cjs",
     "preview": "vite preview --host 127.0.0.1",
     "doctor": "python3 aiteam.py doctor"

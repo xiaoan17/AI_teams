@@ -362,17 +362,30 @@ def cmd_start(args: argparse.Namespace) -> int:
     first = agents[0]
     first_cwd = str(resolve_agent_cwd(root, first.get("cwd")))
     run_tmux(["new-session", "-d", "-s", session, "-n", "agents", "-c", first_cwd, shell_command(first)])
+    run_tmux(["set-option", "-t", session, "window-size", "manual"], check=False)
     first_pane = run_tmux(["display-message", "-p", "-t", f"{session}:0.0", "#{pane_id}"]).stdout.strip()
     runtime["agents"][first["id"]] = setup_agent_runtime(root, first, first_pane)
 
     for agent in agents[1:]:
         cwd = str(resolve_agent_cwd(root, agent.get("cwd")))
         pane = run_tmux(
-            ["split-window", "-P", "-F", "#{pane_id}", "-t", f"{session}:0", "-c", cwd, shell_command(agent)]
+            [
+                "new-window",
+                "-d",
+                "-P",
+                "-F",
+                "#{pane_id}",
+                "-t",
+                session,
+                "-n",
+                agent["id"],
+                "-c",
+                cwd,
+                shell_command(agent),
+            ]
         ).stdout.strip()
         runtime["agents"][agent["id"]] = setup_agent_runtime(root, agent, pane)
 
-    run_tmux(["select-layout", "-t", f"{session}:0", "tiled"])
     save_runtime(root, runtime)
     print(f"Started tmux session: {session}")
     print(f"Attach with: tmux attach -t {session}")
@@ -595,10 +608,35 @@ def cmd_stop(args: argparse.Namespace) -> int:
     root = args.root.resolve()
     cfg = load_config(root)
     session = cfg["workspace"]["tmux_session"]
+    runtime = load_runtime(root)
     if not tmux_has_session(session):
         print(f"tmux session is not running: {session}")
+        runtime.setdefault("agents", {})
+        for agent in cfg.get("agents", []):
+            runtime["agents"].setdefault(agent["id"], {})
+            runtime["agents"][agent["id"]].update(
+                {
+                    "pane": None,
+                    "stopped": True,
+                    "reason": "stopped by user",
+                    "stopped_at": utc_now(),
+                }
+            )
+        save_runtime(root, runtime)
         return 0
     run_tmux(["kill-session", "-t", session])
+    runtime.setdefault("agents", {})
+    for agent in cfg.get("agents", []):
+        runtime["agents"].setdefault(agent["id"], {})
+        runtime["agents"][agent["id"]].update(
+            {
+                "pane": None,
+                "stopped": True,
+                "reason": "stopped by user",
+                "stopped_at": utc_now(),
+            }
+        )
+    save_runtime(root, runtime)
     print(f"Stopped tmux session: {session}")
     return 0
 

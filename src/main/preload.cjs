@@ -31,6 +31,12 @@ contextBridge.exposeInMainWorld("aiTeams", {
     listeners.add(["agent:status", wrapped]);
     return () => ipcRenderer.removeListener("agent:status", wrapped);
   },
+  onRouteVerify: (callback) => {
+    const wrapped = (_event, payload) => callback(payload);
+    ipcRenderer.on("route:verify", wrapped);
+    listeners.add(["route:verify", wrapped]);
+    return () => ipcRenderer.removeListener("route:verify", wrapped);
+  },
   onWorkspaceChanged: (callback) => {
     const wrapped = (_event, payload) => callback(payload);
     ipcRenderer.on("workspace:changed", wrapped);

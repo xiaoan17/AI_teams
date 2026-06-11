@@ -616,8 +616,6 @@ button {
 
 .terminal-branches {
   display: grid;
-  grid-auto-flow: column;
-  grid-auto-columns: minmax(280px, 32vw);
   grid-template-rows: minmax(0, 1fr);
   align-items: stretch;
   gap: 10px;
@@ -626,6 +624,24 @@ button {
   padding: 12px 16px;
   overflow-x: auto;
   overflow-y: hidden;
+}
+
+.terminal-branches-1 {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.terminal-branches-2 {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.terminal-branches-3 {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.terminal-branches-scroll {
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(280px, 1fr);
+  grid-template-columns: none;
 }
 
 .terminal-card {

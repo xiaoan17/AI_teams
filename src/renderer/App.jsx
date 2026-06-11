@@ -113,10 +113,21 @@ const browserPreviewApi = {
   openPath: async () => {},
   onAgentData: () => () => {},
   onAgentStatus: () => () => {},
+  onRouteVerify: () => () => {},
   onWorkspaceChanged: () => () => {}
 };
 
 const api = window.aiTeams || browserPreviewApi;
+
+function filterTerminalInput(data) {
+  return String(data || "")
+    .replace(/\x1b\[(?:I|O)/g, "")
+    .replace(/\x1b\[M[\s\S]{0,3}/g, "")
+    .replace(/\x1b\[<[\d;]*[mM]/g, "")
+    .replace(/\x1b\][\s\S]*?(?:\x07|\x1b\\)/g, "")
+    .replace(/\x1bP[\s\S]*?(?:\x07|\x1b\\)/g, "")
+    .replace(/\x1b\[\??[0-9;]*[Rc]/g, "");
+}
 
 const statusLabels = {
   stopped: "Stopped",
@@ -134,6 +145,24 @@ function statusClass(status) {
   if (status === "running_or_idle" || status === "starting") return "status-running";
   if (status === "exited" || status === "error" || status === "missing_runtime" || status === "pane_missing") return "status-error";
   return "status-stopped";
+}
+
+function stoppedOrExited(agent) {
+  return (
+    agent.status === "stopped" ||
+    agent.status === "exited" ||
+    agent.status === "error" ||
+    agent.status === "missing_runtime" ||
+    agent.status === "pane_missing"
+  );
+}
+
+function pickActiveAgentId(agentList, currentId = null) {
+  const runningAgents = agentList.filter((agent) => agent.enabled && !stoppedOrExited(agent));
+  if (currentId && runningAgents.some((agent) => agent.id === currentId)) {
+    return currentId;
+  }
+  return runningAgents[0]?.id || null;
 }
 
 function documentFolderLabel(folder) {
@@ -297,6 +326,7 @@ function AgentTerminal({ agent, active, onFocus, onNotice }) {
   const lastSeqRef = useRef(0);
   const pendingOutputRef = useRef([]);
   const snapshotReadyRef = useRef(false);
+  const outputWriteDepthRef = useRef(0);
 
   useEffect(() => {
     if (!containerRef.current || termRef.current) return;
@@ -320,6 +350,13 @@ function AgentTerminal({ agent, active, onFocus, onNotice }) {
         selectionBackground: "#29445d"
       }
     });
+    const writeOutput = (data) => {
+      if (!data) return;
+      outputWriteDepthRef.current += 1;
+      terminal.write(data, () => {
+        outputWriteDepthRef.current = Math.max(0, outputWriteDepthRef.current - 1);
+      });
+    };
     const fitAddon = new FitAddon();
     terminal.loadAddon(fitAddon);
     terminal.open(containerRef.current);
@@ -345,7 +382,17 @@ function AgentTerminal({ agent, active, onFocus, onNotice }) {
     };
     fitAndSync();
     terminal.onData((data) => {
-      api.sendInput(agent.id, data).catch((error) => {
+      if (outputWriteDepthRef.current > 0) {
+        return;
+      }
+      if (!agent.pane || stoppedOrExited(agent)) {
+        return;
+      }
+      const filteredData = filterTerminalInput(data);
+      if (!filteredData) {
+        return;
+      }
+      api.sendInput(agent.id, filteredData).catch((error) => {
         onNotice?.(`${agent.name}: ${error.message}`);
       });
     });
@@ -364,13 +411,13 @@ function AgentTerminal({ agent, active, onFocus, onNotice }) {
           if (snapshot.truncated) {
             onNotice?.(`Showing recent ${agent.name} terminal output; older output is in the session log.`);
           }
-          terminal.write(snapshot.data);
+          writeOutput(snapshot.data);
         }
         lastSeqRef.current = snapshot?.seq || 0;
         snapshotReadyRef.current = true;
         for (const pending of pendingOutputRef.current) {
           if (pending.seq && pending.seq <= lastSeqRef.current) continue;
-          terminal.write(pending.data);
+          writeOutput(pending.data);
           if (pending.seq) {
             lastSeqRef.current = pending.seq;
           }
@@ -398,7 +445,7 @@ function AgentTerminal({ agent, active, onFocus, onNotice }) {
       termRef.current = null;
       fitRef.current = null;
     };
-  }, [agent.id, agent.name, onNotice]);
+  }, [agent.backend, agent.id, agent.name, agent.pane, agent.rawLog, onNotice]);
 
   useEffect(() => {
     if (!active || !termRef.current) return;
@@ -416,7 +463,10 @@ function AgentTerminal({ agent, active, onFocus, onNotice }) {
         if (seq && seq <= lastSeqRef.current) {
           return;
         }
-        termRef.current.write(data);
+        outputWriteDepthRef.current += 1;
+        termRef.current.write(data, () => {
+          outputWriteDepthRef.current = Math.max(0, outputWriteDepthRef.current - 1);
+        });
         if (seq) {
           lastSeqRef.current = seq;
         }
@@ -587,7 +637,7 @@ function Sidebar({
               <span className="agent-actions">
                 {!agent.enabled ? (
                   <span className="disabled-label">Off</span>
-                ) : agent.status === "stopped" || agent.status === "exited" ? (
+                ) : stoppedOrExited(agent) ? (
                   <span
                     className="icon-button"
                     role="button"
@@ -657,9 +707,11 @@ function Sidebar({
 const Composer = forwardRef(function Composer({ agents, documents, activeAgentId, onRoute }, ref) {
   const [value, setValue] = useState("");
   const [taskPath, setTaskPath] = useState("");
+  const [sending, setSending] = useState(false);
   const textareaRef = useRef(null);
   const selectionRef = useRef({ start: 0, end: 0 });
   const pendingCursorRef = useRef(null);
+  const composingRef = useRef(false);
   const documentList = documents?.documents || [];
   const enabledAgents = useMemo(() => agents.filter((agent) => agent.enabled), [agents]);
   const hasMention = useMemo(() => /@ ?[A-Za-z0-9_-]+/.test(value), [value]);
@@ -673,12 +725,17 @@ const Composer = forwardRef(function Composer({ agents, documents, activeAgentId
 
   const submit = useCallback(async () => {
     const trimmed = value.trim();
-    if (!trimmed) return;
+    if (!trimmed || sending) return;
     const explicitTargets = hasMention ? [] : activeAgentId ? [activeAgentId] : [];
-    await onRoute(trimmed, explicitTargets, taskPath ? { taskPath } : {});
-    setValue("");
-    selectionRef.current = { start: 0, end: 0 };
-  }, [activeAgentId, hasMention, onRoute, taskPath, value]);
+    setSending(true);
+    try {
+      await onRoute(trimmed, explicitTargets, taskPath ? { taskPath } : {});
+      setValue("");
+      selectionRef.current = { start: 0, end: 0 };
+    } finally {
+      setSending(false);
+    }
+  }, [activeAgentId, hasMention, onRoute, sending, taskPath, value]);
 
   const rememberSelection = useCallback(() => {
     const textarea = textareaRef.current;
@@ -774,11 +831,22 @@ const Composer = forwardRef(function Composer({ agents, documents, activeAgentId
           onFocus={rememberSelection}
           onKeyUp={rememberSelection}
           onSelect={rememberSelection}
+          onCompositionStart={() => {
+            composingRef.current = true;
+          }}
+          onCompositionEnd={() => {
+            composingRef.current = false;
+          }}
           onKeyDown={(event) => {
-            if (event.key !== "Enter" || event.isComposing) {
+            const composing = event.isComposing ||
+              event.nativeEvent?.isComposing ||
+              event.keyCode === 229 ||
+              event.nativeEvent?.keyCode === 229 ||
+              composingRef.current;
+            if (event.key !== "Enter" || composing) {
               return;
             }
-            if (event.ctrlKey) {
+            if (event.ctrlKey || event.metaKey) {
               event.preventDefault();
               insertLineBreak(event);
               return;
@@ -788,13 +856,15 @@ const Composer = forwardRef(function Composer({ agents, documents, activeAgentId
               submit();
             }
           }}
+          disabled={sending}
         />
         <button
           className="send-button"
           onClick={submit}
-          title="Enter to send, Ctrl+Enter for a new line"
+          title="Enter to send, Ctrl/Cmd+Enter for a new line"
+          disabled={sending}
         >
-          Send
+          {sending ? "Sending..." : "Send"}
         </button>
       </div>
     </footer>
@@ -819,7 +889,7 @@ function App() {
   const refreshAgents = useCallback(async () => {
     const nextAgents = await api.listAgents();
     setAgents(nextAgents);
-    setActiveAgentId((current) => current || nextAgents.find((agent) => agent.enabled)?.id || nextAgents[0]?.id || null);
+    setActiveAgentId((current) => pickActiveAgentId(nextAgents, current));
   }, []);
 
   const loadWorkspaceData = useCallback(async () => {
@@ -831,7 +901,7 @@ function App() {
     setWorkspace(workspaceInfo);
     setDocuments(documentInfo);
     setAgents(agentList);
-    setActiveAgentId(agentList.find((agent) => agent.enabled)?.id || agentList[0]?.id || null);
+    setActiveAgentId(pickActiveAgentId(agentList));
     return { workspaceInfo, documentInfo, agentList };
   }, []);
 
@@ -851,12 +921,18 @@ function App() {
     const offStatus = api.onAgentStatus((updated) => {
       setAgents((current) => current.map((agent) => (agent.id === updated.id ? { ...agent, ...updated } : agent)));
     });
+    const offRouteVerify = api.onRouteVerify?.((payload) => {
+      if (payload && payload.verified === false) {
+        setNotice(`Message may not have been injected into @${payload.id}; check that agent terminal.`);
+      }
+    }) || (() => {});
     const offWorkspace = api.onWorkspaceChanged(() => {
       loadWorkspaceData().catch((error) => setNotice(error.message));
     });
     return () => {
       mounted = false;
       offStatus();
+      offRouteVerify();
       offWorkspace();
     };
   }, [loadWorkspaceData]);
@@ -868,6 +944,10 @@ function App() {
       // Ignore storage failures in restricted browser contexts.
     }
   }, [sidebarCollapsed]);
+
+  useEffect(() => {
+    setActiveAgentId((current) => pickActiveAgentId(agents, current));
+  }, [agents]);
 
   const startAgent = async (agentId) => {
     try {
@@ -890,7 +970,7 @@ function App() {
 
   const startEnabled = async () => {
     try {
-      for (const agent of visibleAgents.filter(stoppedOrExited)) {
+      for (const agent of enabledAgents.filter(stoppedOrExited)) {
         const state = await api.startAgent(agent.id);
         setAgents((current) => current.map((item) => (item.id === agent.id ? { ...item, ...state } : item)));
       }
@@ -906,7 +986,7 @@ function App() {
       if (api.stopAllAgents) {
         await api.stopAllAgents();
       } else {
-        await Promise.all(visibleAgents.filter((agent) => !stoppedOrExited(agent)).map((agent) => api.stopAgent(agent.id)));
+        await Promise.all(enabledAgents.filter((agent) => !stoppedOrExited(agent)).map((agent) => api.stopAgent(agent.id)));
       }
       await refreshAgents();
       setNotice("");
@@ -960,14 +1040,14 @@ function App() {
     composerRef.current?.insertText(relativePath);
   }, []);
 
-  const visibleAgents = agents.filter((agent) => agent.enabled);
-  const stoppedOrExited = (agent) => (
-    agent.status === "stopped" ||
-    agent.status === "exited" ||
-    agent.status === "error" ||
-    agent.status === "missing_runtime" ||
-    agent.status === "pane_missing"
-  );
+  const enabledAgents = agents.filter((agent) => agent.enabled);
+  const terminalAgents = enabledAgents.filter((agent) => !stoppedOrExited(agent));
+  const terminalLayoutCount = Math.min(Math.max(terminalAgents.length, 1), 3);
+  const terminalLayoutClass = [
+    "terminal-branches",
+    `terminal-branches-${terminalLayoutCount}`,
+    terminalAgents.length > 3 ? "terminal-branches-scroll" : ""
+  ].filter(Boolean).join(" ");
 
   return (
     <div className={`app-shell ${sidebarCollapsed ? "app-shell-sidebar-collapsed" : ""}`}>
@@ -978,7 +1058,12 @@ function App() {
         activeAgentId={activeAgentId}
         collapsed={sidebarCollapsed}
         onToggleCollapsed={() => setSidebarCollapsed((current) => !current)}
-        onSelectAgent={setActiveAgentId}
+        onSelectAgent={(agentId) => {
+          const agent = agents.find((item) => item.id === agentId);
+          if (agent && !stoppedOrExited(agent)) {
+            setActiveAgentId(agentId);
+          }
+        }}
         onSelectWorkspace={selectWorkspace}
         onChooseWorkspace={chooseWorkspace}
         onToggleDocumentPinned={toggleDocumentPinned}
@@ -992,24 +1077,37 @@ function App() {
       <main className={`workspace ${notice ? "workspace-has-notice" : ""}`}>
         {notice ? <div className="notice" onClick={() => setNotice("")}>{notice}</div> : null}
 
-        <section className="terminal-branches">
-          {visibleAgents.map((agent) => (
+        <section className={terminalLayoutClass}>
+          {terminalAgents.map((agent) => (
             <AgentTerminal
-              key={`${workspace?.root || "workspace"}:${agent.id}`}
+              key={[
+                workspace?.root || "workspace",
+                agent.id,
+                agent.backend || "",
+                agent.pane || "",
+                agent.rawLog || "",
+                agent.startedAt || ""
+              ].join(":")}
               agent={agent}
               active={activeAgentId === agent.id}
               onFocus={() => setActiveAgentId(agent.id)}
               onNotice={setNotice}
             />
           ))}
-          {!visibleAgents.length ? (
+          {!terminalAgents.length ? (
             <div className="empty-state">
-              Enable at least one agent in <code>.aiteam/agents.json</code> or with <code>python3 aiteam.py agent set</code>.
+              {enabledAgents.length
+                ? "Start an agent from the sidebar to open its terminal."
+                : (
+                  <>
+                    No agents are configured in AI Teams.
+                  </>
+                )}
             </div>
           ) : null}
         </section>
 
-        <Composer ref={composerRef} agents={agents} documents={documents} activeAgentId={activeAgentId} onRoute={route} />
+        <Composer ref={composerRef} agents={terminalAgents} documents={documents} activeAgentId={activeAgentId} onRoute={route} />
       </main>
     </div>
   );
