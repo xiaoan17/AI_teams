@@ -1,0 +1,15 @@
+.DS_Store
+__pycache__/
+*.pyc
+node_modules/
+dist/
+dist-electron/
+.vite/
+.aiteam-demo/
+
+# AI Teams runtime output. Keep .aiteam/agents.json if you decide to version a
+# real workspace config, but logs/status are local runtime artifacts.
+.aiteam/runtime.json
+.aiteam/tmp/
+.aiteam/status/
+.aiteam/sessions/
