@@ -6,6 +6,7 @@ const path = require("path");
 const { createTmuxViewManager, runTmuxAsync } = require("./tmux-view.cjs");
 
 const APP_ROOT = path.resolve(__dirname, "..", "..");
+const APP_ICON_PATH = path.join(APP_ROOT, "public", "app-icon.png");
 app.setName("AI Teams");
 if (!process.env.AITEAMS_USER_DATA_PATH) {
   app.setPath("userData", path.join(app.getPath("appData"), "ai-teams"));
@@ -2346,6 +2347,7 @@ function createWindow() {
     minWidth: 1100,
     minHeight: 760,
     title: "AI Teams",
+    icon: APP_ICON_PATH,
     backgroundColor: "#101214",
     webPreferences: {
       preload: path.join(__dirname, "preload.cjs"),
@@ -2355,8 +2357,12 @@ function createWindow() {
   });
 
   const devUrl = process.env.VITE_DEV_SERVER_URL || "http://127.0.0.1:5173";
-  if (process.env.NODE_ENV === "production") {
-    mainWindow.loadFile(path.join(APP_ROOT, "dist", "index.html"));
+  const distIndexPath = path.join(APP_ROOT, "dist", "index.html");
+  const shouldLoadBuiltAssets = app.isPackaged || process.env.NODE_ENV === "production" || (
+    process.execPath.includes(".app/Contents/MacOS/") && fs.existsSync(distIndexPath)
+  );
+  if (shouldLoadBuiltAssets) {
+    mainWindow.loadFile(distIndexPath);
   } else {
     mainWindow.loadURL(devUrl);
   }

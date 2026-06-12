@@ -5,6 +5,7 @@ import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
 import "./styles.css";
 import { DEFAULT_THEME_ID, themePresets, themeToCssVars } from "./themes.js";
+import aiTeamsAppIcon from "../../public/app-icon.png";
 
 const browserPreviewApi = {
   getWorkspace: async () => ({
@@ -861,7 +862,9 @@ function Sidebar({
     <aside className={`sidebar ${collapsed ? "sidebar-collapsed" : ""}`}>
       <div className="brand">
         <div className="brand-top">
-          <div className="brand-mark">AT</div>
+          <div className="brand-mark">
+            <img src={aiTeamsAppIcon} alt="" aria-hidden="true" />
+          </div>
           <div className="brand-copy">
             <h1>AI Teams</h1>
           </div>
@@ -936,7 +939,9 @@ function Sidebar({
       </div>
 
       <div className="collapsed-brand">
-        <div className="brand-mark">AT</div>
+        <div className="brand-mark">
+          <img src={aiTeamsAppIcon} alt="" aria-hidden="true" />
+        </div>
         <div className="brand-actions">
           <button
             className="sidebar-icon-button sidebar-toggle"
