@@ -38,15 +38,32 @@ npm run dev:demo
 
 This creates `.aiteam-demo/` locally and opens the desktop app with echo-only agents.
 
+## Agent Config Ownership
+
+The desktop app and the CLI read different agent configs on purpose:
+
+- **Desktop app** (`npm run dev`): agents are app-level capabilities. The config lives in Electron user data — on macOS `~/Library/Application Support/ai-teams/agents.json` — and is created with defaults on first launch. Override the location with the `AITEAMS_AGENT_CONFIG_PATH` env var. Switching projects keeps the same agent list; relative agent `cwd` values resolve against the selected project.
+- **CLI** (`aiteam.py`): the workspace-local `.aiteam/agents.json` is canonical. `init`, `agent set`, `start`, `send`, and `status` all read and write it.
+- **Demo mode** (`npm run dev:demo`): the only case where the desktop app reads a workspace `.aiteam/agents.json`, and only when every agent in it has `permission_mode: "demo-echo"`.
+
+The checked-in `.aiteam/agents.json` in this repository is a safe template (all real agents disabled, relative `cwd`). Keep machine-specific edits out of version control; `npm run release:check` rejects absolute local paths and enabled real agents in the template.
+
+Run `python3 aiteam.py doctor` to print both config paths and validate the CLI config.
+
 ## Real Agent Mode
 
-The checked-in `.aiteam/agents.json` is a safe template: all real agents are disabled. Enable only the agent CLIs you have installed:
+For the **desktop app**, edit the user-level config reported by `doctor` (or just launch once to create it with defaults), then:
+
+```bash
+npm run dev
+```
+
+For the **CLI / tmux router**, the checked-in `.aiteam/agents.json` is a safe template with all real agents disabled. Enable only the agent CLIs you have installed:
 
 ```bash
 python3 aiteam.py agent set codex --command codex --cwd . --enable
 python3 aiteam.py agent set claude --command claude --cwd . --enable
 python3 aiteam.py doctor
-npm run dev
 ```
 
 Keep uninstalled agents disabled:
@@ -76,11 +93,11 @@ python3 /path/to/AI_teams/aiteam.py stop
 
 ## Workspace Files
 
-Runtime data lives under `.aiteam/` and is git-ignored, except `agents.json` (versioned as a safe template):
+Runtime data lives under `.aiteam/` and is git-ignored, except `agents.json` (versioned as a safe template; canonical for the CLI, used by the desktop app only in demo mode):
 
 ```text
 .aiteam/
-  agents.json     # workspace + agent config
+  agents.json     # workspace + agent config (CLI canonical, safe template in git)
   runtime.json    # tmux pane ids, log paths
   tasks/          # handoff task markdown
   sessions/       # timelines and per-agent logs
@@ -93,5 +110,6 @@ Runtime data lives under `.aiteam/` and is git-ignored, except `agents.json` (ve
   `ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/ npm install`
 - App opens but agents do not start: run `python3 aiteam.py doctor` and fix any `fail` rows (install the missing command, correct `cwd`, or disable the agent).
 - `node-pty` build failures can be ignored: direct PTY is an optional fallback (`npm run smoke:pty`), the default flow is tmux-backed.
+- `npm run smoke` (and `release:check:full`) needs real tmux socket access; sandboxed environments that block `/private/tmp/tmux-*` fail with `error connecting to /private/tmp/tmux-.../default (Operation not permitted)`. Run it outside the sandbox.
 
-Before opening an issue, run `npm run build && npm run doctor && npm run smoke`.
+Before opening an issue, run `npm run release:check` (static checks: config hygiene, build, doctor) and, where tmux is available, `npm run release:check:full` (adds tmux smoke tests).

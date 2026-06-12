@@ -99,6 +99,37 @@ function readLog(rawLog) {
       throw new Error("Timed out waiting for bracketed paste content in raw log.");
     }
 
+    const historyLines = Array.from({ length: 80 }, (_item, index) => `HISTORY_${index + 1}`).join("\n");
+    await manager.pasteAndSubmit(agentId, historyLines);
+    const historyOk = await waitFor(() => readLog(rawLog).includes("HISTORY_80"), 5000);
+    if (!historyOk) {
+      throw new Error("Timed out waiting for history lines in raw log.");
+    }
+
+    manager.scroll(agentId, -5);
+    const scrolled = await waitFor(async () => {
+      const result = await runTmuxAsync(["display-message", "-p", "-t", `${session}-view-${agentId}:0`, "#{pane_in_mode}\t#{scroll_position}"], { check: false });
+      const [inModeText, positionText = "0"] = result.stdout.trim().split("\t");
+      const inMode = Number(inModeText || 0);
+      const position = Number(positionText || 0);
+      return result.status === 0 && inMode > 0 && position > 0;
+    }, 3000);
+    if (!scrolled) {
+      throw new Error("Timed out waiting for tmux view history scroll.");
+    }
+
+    manager.scroll(agentId, 500);
+    const atBottom = await waitFor(async () => {
+      const result = await runTmuxAsync(["display-message", "-p", "-t", `${session}-view-${agentId}:0`, "#{pane_in_mode}\t#{scroll_position}"], { check: false });
+      const [inModeText, positionText = "0"] = result.stdout.trim().split("\t");
+      const inMode = Number(inModeText || 0);
+      const position = Number(positionText || 0);
+      return result.status === 0 && inMode === 0 && position === 0;
+    }, 3000);
+    if (!atBottom) {
+      throw new Error("Timed out waiting for tmux view scroll to return to live output.");
+    }
+
     runTmux(["kill-session", "-t", session], { check: false });
     await manager.destroyAll();
     await runTmuxAsync(["kill-session", "-t", `${session}-view-${agentId}`], { check: false });

@@ -109,6 +109,7 @@ const browserPreviewApi = {
   stopAllAgents: async () => {},
   sendInput: async () => {},
   resizeAgent: async () => {},
+  scrollAgent: async () => false,
   routeMessage: async (message, targets) => ({ targets: targets.length ? targets : ["codex"], message }),
   openPath: async () => {},
   onAgentData: () => () => {},
@@ -127,6 +128,69 @@ function filterTerminalInput(data) {
     .replace(/\x1b\][\s\S]*?(?:\x07|\x1b\\)/g, "")
     .replace(/\x1bP[\s\S]*?(?:\x07|\x1b\\)/g, "")
     .replace(/\x1b\[\??[0-9;]*[Rc]/g, "");
+}
+
+const terminalMouseModeParams = new Set([
+  "9",
+  "1000",
+  "1001",
+  "1002",
+  "1003",
+  "1004",
+  "1005",
+  "1006",
+  "1015"
+]);
+const terminalMouseModeReset = `\x1b[?${[...terminalMouseModeParams].join(";")}l`;
+
+function incompleteEscapeStart(value) {
+  const escapeIndex = value.lastIndexOf("\x1b");
+  if (escapeIndex === -1) return -1;
+  const tail = value.slice(escapeIndex);
+  if (tail === "\x1b") return escapeIndex;
+  if (tail.startsWith("\x1b[")) {
+    for (let index = 2; index < tail.length; index += 1) {
+      const code = tail.charCodeAt(index);
+      if (code >= 0x40 && code <= 0x7e) return -1;
+    }
+    return escapeIndex;
+  }
+  if ((tail.startsWith("\x1b]") || tail.startsWith("\x1bP")) && !tail.includes("\x07") && !tail.includes("\x1b\\")) {
+    return escapeIndex;
+  }
+  return -1;
+}
+
+function completeTerminalOutput(data, pendingRef) {
+  const value = `${pendingRef.current || ""}${data || ""}`;
+  const pendingStart = incompleteEscapeStart(value);
+  if (pendingStart === -1) {
+    pendingRef.current = "";
+    return value;
+  }
+  pendingRef.current = value.slice(pendingStart);
+  return value.slice(0, pendingStart);
+}
+
+function filterTerminalOutput(data, pendingRef) {
+  return completeTerminalOutput(String(data || ""), pendingRef).replace(/\x1b\[\?([0-9;]*)([hl])/g, (match, params, action) => {
+    if (action !== "h") return match;
+    if (!params) return match;
+    const keptParams = params.split(";").filter((param) => param && !terminalMouseModeParams.has(param));
+    return keptParams.length ? `\x1b[?${keptParams.join(";")}${action}` : "";
+  });
+}
+
+function resetTerminalMouseModes(terminal) {
+  try {
+    terminal.write(terminalMouseModeReset);
+  } catch {
+    // Selection should stay best-effort if the terminal is already disposed.
+  }
+}
+
+function snapshotToTerminalData(data) {
+  return `\x1bc${String(data || "").replace(/\r?\n/g, "\r\n")}`;
 }
 
 const statusLabels = {
@@ -157,12 +221,27 @@ function stoppedOrExited(agent) {
   );
 }
 
-function pickActiveAgentId(agentList, currentId = null) {
+function pickActiveAgentId(agentList, currentId = null, minimized = null) {
   const runningAgents = agentList.filter((agent) => agent.enabled && !stoppedOrExited(agent));
-  if (currentId && runningAgents.some((agent) => agent.id === currentId)) {
+  const visibleAgents = minimized ? runningAgents.filter((agent) => !minimized.has(agent.id)) : runningAgents;
+  if (currentId && visibleAgents.some((agent) => agent.id === currentId)) {
     return currentId;
   }
-  return runningAgents[0]?.id || null;
+  return visibleAgents[0]?.id || null;
+}
+
+function minimizedStorageKey(workspaceRoot) {
+  return `aiTeams.minimizedAgents:${workspaceRoot || "default"}`;
+}
+
+function readMinimizedAgents(workspaceRoot) {
+  try {
+    const raw = window.localStorage?.getItem(minimizedStorageKey(workspaceRoot));
+    const parsed = raw ? JSON.parse(raw) : [];
+    return new Set(Array.isArray(parsed) ? parsed.filter((id) => typeof id === "string") : []);
+  } catch {
+    return new Set();
+  }
 }
 
 function documentFolderLabel(folder) {
@@ -319,12 +398,16 @@ function DocumentTreeNode({
   );
 }
 
-function AgentTerminal({ agent, active, onFocus, onNotice }) {
+function AgentTerminal({ agent, active, hidden, onFocus, onNotice }) {
   const containerRef = useRef(null);
   const termRef = useRef(null);
   const fitRef = useRef(null);
+  const scheduleResizeRef = useRef(null);
+  const scheduleRefreshRef = useRef(null);
+  const writeOutputRef = useRef(null);
   const lastSeqRef = useRef(0);
   const pendingOutputRef = useRef([]);
+  const pendingTerminalOutputRef = useRef("");
   const snapshotReadyRef = useRef(false);
   const outputWriteDepthRef = useRef(0);
 
@@ -332,16 +415,20 @@ function AgentTerminal({ agent, active, onFocus, onNotice }) {
     if (!containerRef.current || termRef.current) return;
     let disposed = false;
     let resizeFrame = 0;
+    let refreshFrame = 0;
     let lastResizeKey = "";
     lastSeqRef.current = 0;
     pendingOutputRef.current = [];
+    pendingTerminalOutputRef.current = "";
     snapshotReadyRef.current = false;
     const terminal = new Terminal({
       cursorBlink: true,
-      convertEol: true,
+      convertEol: false,
       fontFamily: "SFMono-Regular, Menlo, Monaco, Consolas, monospace",
       fontSize: 12.5,
       lineHeight: 1.2,
+      macOptionClickForcesSelection: true,
+      rescaleOverlappingGlyphs: true,
       scrollback: 8000,
       theme: {
         background: "#0d1114",
@@ -350,26 +437,78 @@ function AgentTerminal({ agent, active, onFocus, onNotice }) {
         selectionBackground: "#29445d"
       }
     });
-    const writeOutput = (data) => {
-      if (!data) return;
-      outputWriteDepthRef.current += 1;
-      terminal.write(data, () => {
-        outputWriteDepthRef.current = Math.max(0, outputWriteDepthRef.current - 1);
+    const refreshViewport = () => {
+      if (disposed || !termRef.current) return;
+      if (refreshFrame) return;
+      refreshFrame = requestAnimationFrame(() => {
+        refreshFrame = 0;
+        if (disposed || !termRef.current || terminal.rows < 1) return;
+        try {
+          terminal.clearTextureAtlas?.();
+          terminal.refresh(0, terminal.rows - 1);
+        } catch {
+          // xterm refresh is best-effort; the data buffer is still intact.
+        }
       });
+    };
+    const writeOutput = (data) => {
+      const visibleData = filterTerminalOutput(data, pendingTerminalOutputRef);
+      if (!visibleData) return false;
+      outputWriteDepthRef.current += 1;
+      terminal.write(visibleData, () => {
+        outputWriteDepthRef.current = Math.max(0, outputWriteDepthRef.current - 1);
+        resetTerminalMouseModes(terminal);
+        refreshViewport();
+      });
+      return true;
     };
     const fitAddon = new FitAddon();
     terminal.loadAddon(fitAddon);
     terminal.open(containerRef.current);
+    resetTerminalMouseModes(terminal);
+    terminal.attachCustomWheelEventHandler((event) => {
+      const lineHeight = Math.max(
+        1,
+        terminal.element?.querySelector(".xterm-rows > div")?.getBoundingClientRect().height || 15
+      );
+      const pageLines = Math.max(1, terminal.rows - 1);
+      const rawLines = event.deltaMode === 1
+        ? event.deltaY
+        : event.deltaMode === 2
+          ? event.deltaY * pageLines
+          : event.deltaY / lineHeight;
+      const lines = Math.trunc(rawLines) || Math.sign(rawLines);
+      if (lines) {
+        api.scrollAgent(agent.id, lines).then((handled) => {
+          if (!handled) {
+            terminal.scrollLines(lines);
+            refreshViewport();
+          }
+        }).catch(() => {
+          terminal.scrollLines(lines);
+          refreshViewport();
+        });
+        refreshViewport();
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      return false;
+    });
     const fitAndSync = () => {
       if (disposed || !containerRef.current || !termRef.current) return;
       const box = containerRef.current.getBoundingClientRect();
       if (box.width < 20 || box.height < 20) return;
-      fitAddon.fit();
+      try {
+        fitAddon.fit();
+      } catch {
+        return;
+      }
       const resizeKey = `${terminal.cols}x${terminal.rows}`;
       if (resizeKey !== lastResizeKey) {
         lastResizeKey = resizeKey;
         api.resizeAgent(agent.id, terminal.cols, terminal.rows).catch(() => {});
       }
+      refreshViewport();
     };
     const scheduleResize = () => {
       if (resizeFrame) {
@@ -398,6 +537,9 @@ function AgentTerminal({ agent, active, onFocus, onNotice }) {
     });
     termRef.current = terminal;
     fitRef.current = fitAddon;
+    scheduleResizeRef.current = scheduleResize;
+    scheduleRefreshRef.current = refreshViewport;
+    writeOutputRef.current = writeOutput;
 
     const observer = new ResizeObserver(scheduleResize);
     observer.observe(containerRef.current);
@@ -405,13 +547,16 @@ function AgentTerminal({ agent, active, onFocus, onNotice }) {
     scheduleResize();
     const restoreSnapshot = async () => {
       try {
+        scheduleResize();
+        await new Promise((resolve) => requestAnimationFrame(resolve));
+        fitAndSync();
         const snapshot = await api.getAgentSnapshot(agent.id);
         if (disposed || !termRef.current) return;
         if (snapshot?.data) {
           if (snapshot.truncated) {
             onNotice?.(`Showing recent ${agent.name} terminal output; older output is in the session log.`);
           }
-          writeOutput(snapshot.data);
+          writeOutput(snapshotToTerminalData(snapshot.data));
         }
         lastSeqRef.current = snapshot?.seq || 0;
         snapshotReadyRef.current = true;
@@ -438,20 +583,38 @@ function AgentTerminal({ agent, active, onFocus, onNotice }) {
       if (resizeFrame) {
         cancelAnimationFrame(resizeFrame);
       }
+      if (refreshFrame) {
+        cancelAnimationFrame(refreshFrame);
+      }
       resizeTimers.forEach((timer) => clearTimeout(timer));
       observer.disconnect();
       window.removeEventListener("resize", scheduleResize);
       terminal.dispose();
       termRef.current = null;
       fitRef.current = null;
+      scheduleResizeRef.current = null;
+      scheduleRefreshRef.current = null;
+      writeOutputRef.current = null;
     };
   }, [agent.backend, agent.id, agent.name, agent.pane, agent.rawLog, onNotice]);
 
   useEffect(() => {
-    if (!active || !termRef.current) return;
+    if (hidden) return;
+    scheduleResizeRef.current?.();
+    scheduleRefreshRef.current?.();
+    const timers = [80, 260].map((delay) => setTimeout(() => {
+      scheduleResizeRef.current?.();
+      scheduleRefreshRef.current?.();
+    }, delay));
+    return () => timers.forEach((timer) => clearTimeout(timer));
+  }, [hidden]);
+
+  useEffect(() => {
+    if (!active || hidden || !termRef.current) return;
     termRef.current.focus();
-    fitRef.current?.fit();
-  }, [active]);
+    scheduleResizeRef.current?.();
+    scheduleRefreshRef.current?.();
+  }, [active, hidden]);
 
   useEffect(() => {
     const off = api.onAgentData(({ id, data, seq = 0 }) => {
@@ -463,10 +626,10 @@ function AgentTerminal({ agent, active, onFocus, onNotice }) {
         if (seq && seq <= lastSeqRef.current) {
           return;
         }
-        outputWriteDepthRef.current += 1;
-        termRef.current.write(data, () => {
-          outputWriteDepthRef.current = Math.max(0, outputWriteDepthRef.current - 1);
-        });
+        const didWrite = writeOutputRef.current?.(data);
+        if (!didWrite) {
+          return;
+        }
         if (seq) {
           lastSeqRef.current = seq;
         }
@@ -476,7 +639,11 @@ function AgentTerminal({ agent, active, onFocus, onNotice }) {
   }, [agent.id]);
 
   return (
-    <section className={`terminal-card ${active ? "terminal-card-active" : ""}`} onClick={onFocus}>
+    <section
+      className={`terminal-card ${active ? "terminal-card-active" : ""} ${hidden ? "terminal-card-hidden" : ""}`}
+      onPointerDownCapture={onFocus}
+      onClick={onFocus}
+    >
       <header className="terminal-header">
         <div>
           <div className="terminal-name">{agent.name}</div>
@@ -500,6 +667,7 @@ function Sidebar({
   agents,
   documents,
   activeAgentId,
+  minimizedAgents,
   collapsed,
   onToggleCollapsed,
   onSelectAgent,
@@ -508,6 +676,7 @@ function Sidebar({
   onToggleDocumentPinned,
   onStart,
   onStop,
+  onToggleMinimize,
   onStartEnabled,
   onStopEnabled,
   onOpen,
@@ -623,10 +792,17 @@ function Sidebar({
       <section className="panel">
         <div className="panel-title">Agents</div>
         <div className="agent-list">
-        {agents.map((agent) => (
+        {agents.map((agent) => {
+          const minimized = agent.enabled && !stoppedOrExited(agent) && minimizedAgents?.has(agent.id);
+          return (
             <button
               key={agent.id}
-              className={`agent-row ${activeAgentId === agent.id ? "agent-row-active" : ""} ${!agent.enabled ? "agent-row-disabled" : ""}`}
+              className={[
+                "agent-row",
+                activeAgentId === agent.id ? "agent-row-active" : "",
+                !agent.enabled ? "agent-row-disabled" : "",
+                minimized ? "agent-row-minimized" : ""
+              ].filter(Boolean).join(" ")}
               onClick={() => onSelectAgent(agent.id)}
               title={agent.name}
             >
@@ -651,22 +827,65 @@ function Sidebar({
                     ▶
                   </span>
                 ) : (
-                  <span
-                    className="icon-button"
-                    role="button"
-                    tabIndex={0}
-                    title="Stop agent"
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      onStop(agent.id);
-                    }}
-                  >
-                    ■
-                  </span>
+                  <>
+                    <span
+                      className="window-control window-control-close"
+                      role="button"
+                      tabIndex={0}
+                      title="Stop agent"
+                      aria-label={`Stop ${agent.name}`}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        onStop(agent.id);
+                      }}
+                    >
+                      x
+                    </span>
+                    <span
+                      className={[
+                        "window-control",
+                        "window-control-minimize",
+                        minimized ? "window-control-muted" : ""
+                      ].filter(Boolean).join(" ")}
+                      role="button"
+                      tabIndex={0}
+                      title={minimized ? "Panel is minimized" : "Minimize panel"}
+                      aria-label={minimized ? `${agent.name} panel is minimized` : `Minimize ${agent.name} panel`}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        if (!minimized) {
+                          onToggleMinimize(agent.id);
+                        }
+                      }}
+                    >
+                      -
+                    </span>
+                    <span
+                      className={[
+                        "window-control",
+                        "window-control-expand",
+                        minimized ? "window-control-emphasis" : ""
+                      ].filter(Boolean).join(" ")}
+                      role="button"
+                      tabIndex={0}
+                      title={minimized ? "Restore panel" : "Focus panel"}
+                      aria-label={minimized ? `Restore ${agent.name} panel` : `Focus ${agent.name} panel`}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        if (minimized) {
+                          onToggleMinimize(agent.id);
+                        }
+                        onSelectAgent(agent.id);
+                      }}
+                    >
+                      □
+                    </span>
+                  </>
                 )}
               </span>
             </button>
-          ))}
+          );
+        })}
         </div>
       </section>
 
@@ -885,11 +1104,75 @@ function App() {
       return false;
     }
   });
+  const [minimizedAgents, setMinimizedAgents] = useState(() => new Set());
+  const minimizedReadyRootRef = useRef(null);
+  const minimizedAgentsRef = useRef(minimizedAgents);
+  const workspaceRoot = workspace?.root || "";
+
+  useEffect(() => {
+    minimizedAgentsRef.current = minimizedAgents;
+  }, [minimizedAgents]);
+
+  // Persist before the load effect below so a workspace switch cannot write
+  // the previous workspace's set under the new workspace key.
+  useEffect(() => {
+    if (minimizedReadyRootRef.current !== workspaceRoot) return;
+    try {
+      window.localStorage?.setItem(minimizedStorageKey(workspaceRoot), JSON.stringify([...minimizedAgents]));
+    } catch {
+      // Ignore storage failures in restricted browser contexts.
+    }
+  }, [minimizedAgents, workspaceRoot]);
+
+  useEffect(() => {
+    minimizedReadyRootRef.current = workspaceRoot;
+    setMinimizedAgents(readMinimizedAgents(workspaceRoot));
+  }, [workspaceRoot]);
+
+  // A minimized panel only makes sense while the agent runs: drop the flag once
+  // it stops/exits so the next start shows the panel again.
+  useEffect(() => {
+    setMinimizedAgents((current) => {
+      if (!current.size) return current;
+      const next = new Set(current);
+      let changed = false;
+      for (const agent of agents) {
+        if (next.has(agent.id) && (!agent.enabled || stoppedOrExited(agent))) {
+          next.delete(agent.id);
+          changed = true;
+        }
+      }
+      return changed ? next : current;
+    });
+  }, [agents]);
+
+  const clearMinimized = useCallback((agentIds) => {
+    setMinimizedAgents((current) => {
+      const next = new Set(current);
+      let changed = false;
+      for (const agentId of agentIds) {
+        if (next.delete(agentId)) changed = true;
+      }
+      return changed ? next : current;
+    });
+  }, []);
+
+  const toggleAgentMinimized = useCallback((agentId) => {
+    setMinimizedAgents((current) => {
+      const next = new Set(current);
+      if (next.has(agentId)) {
+        next.delete(agentId);
+      } else {
+        next.add(agentId);
+      }
+      return next;
+    });
+  }, []);
 
   const refreshAgents = useCallback(async () => {
     const nextAgents = await api.listAgents();
     setAgents(nextAgents);
-    setActiveAgentId((current) => pickActiveAgentId(nextAgents, current));
+    setActiveAgentId((current) => pickActiveAgentId(nextAgents, current, minimizedAgentsRef.current));
   }, []);
 
   const loadWorkspaceData = useCallback(async () => {
@@ -901,7 +1184,7 @@ function App() {
     setWorkspace(workspaceInfo);
     setDocuments(documentInfo);
     setAgents(agentList);
-    setActiveAgentId(pickActiveAgentId(agentList));
+    setActiveAgentId(pickActiveAgentId(agentList, null, readMinimizedAgents(workspaceInfo?.root || "")));
     return { workspaceInfo, documentInfo, agentList };
   }, []);
 
@@ -929,13 +1212,17 @@ function App() {
     const offWorkspace = api.onWorkspaceChanged(() => {
       loadWorkspaceData().catch((error) => setNotice(error.message));
     });
+    const offDocumentsChanged = api.onDocumentsChanged?.(() => {
+      refreshDocuments().catch((error) => setNotice(error.message));
+    }) || (() => {});
     return () => {
       mounted = false;
       offStatus();
       offRouteVerify();
       offWorkspace();
+      offDocumentsChanged();
     };
-  }, [loadWorkspaceData]);
+  }, [loadWorkspaceData, refreshDocuments]);
 
   useEffect(() => {
     try {
@@ -946,11 +1233,12 @@ function App() {
   }, [sidebarCollapsed]);
 
   useEffect(() => {
-    setActiveAgentId((current) => pickActiveAgentId(agents, current));
-  }, [agents]);
+    setActiveAgentId((current) => pickActiveAgentId(agents, current, minimizedAgents));
+  }, [agents, minimizedAgents]);
 
   const startAgent = async (agentId) => {
     try {
+      clearMinimized([agentId]);
       const state = await api.startAgent(agentId);
       setAgents((current) => current.map((agent) => (agent.id === agentId ? { ...agent, ...state } : agent)));
       setActiveAgentId(agentId);
@@ -961,6 +1249,7 @@ function App() {
 
   const stopAgent = async (agentId) => {
     try {
+      clearMinimized([agentId]);
       await api.stopAgent(agentId);
       await refreshAgents();
     } catch (error) {
@@ -983,6 +1272,7 @@ function App() {
 
   const stopEnabled = async () => {
     try {
+      clearMinimized(enabledAgents.map((agent) => agent.id));
       if (api.stopAllAgents) {
         await api.stopAllAgents();
       } else {
@@ -1041,12 +1331,14 @@ function App() {
   }, []);
 
   const enabledAgents = agents.filter((agent) => agent.enabled);
-  const terminalAgents = enabledAgents.filter((agent) => !stoppedOrExited(agent));
-  const terminalLayoutCount = Math.min(Math.max(terminalAgents.length, 1), 3);
+  const runningAgents = enabledAgents.filter((agent) => !stoppedOrExited(agent));
+  const visibleTerminalAgents = runningAgents.filter((agent) => !minimizedAgents.has(agent.id));
+  const minimizedCount = runningAgents.length - visibleTerminalAgents.length;
+  const terminalLayoutCount = Math.min(Math.max(visibleTerminalAgents.length, 1), 3);
   const terminalLayoutClass = [
     "terminal-branches",
     `terminal-branches-${terminalLayoutCount}`,
-    terminalAgents.length > 3 ? "terminal-branches-scroll" : ""
+    visibleTerminalAgents.length > 3 ? "terminal-branches-scroll" : ""
   ].filter(Boolean).join(" ");
 
   return (
@@ -1056,11 +1348,15 @@ function App() {
         agents={agents}
         documents={documents}
         activeAgentId={activeAgentId}
+        minimizedAgents={minimizedAgents}
         collapsed={sidebarCollapsed}
         onToggleCollapsed={() => setSidebarCollapsed((current) => !current)}
         onSelectAgent={(agentId) => {
           const agent = agents.find((item) => item.id === agentId);
           if (agent && !stoppedOrExited(agent)) {
+            if (minimizedAgents.has(agentId)) {
+              clearMinimized([agentId]);
+            }
             setActiveAgentId(agentId);
           }
         }}
@@ -1069,6 +1365,7 @@ function App() {
         onToggleDocumentPinned={toggleDocumentPinned}
         onStart={startAgent}
         onStop={stopAgent}
+        onToggleMinimize={toggleAgentMinimized}
         onStartEnabled={startEnabled}
         onStopEnabled={stopEnabled}
         onOpen={(targetPath) => api.openPath(targetPath)}
@@ -1078,7 +1375,7 @@ function App() {
         {notice ? <div className="notice" onClick={() => setNotice("")}>{notice}</div> : null}
 
         <section className={terminalLayoutClass}>
-          {terminalAgents.map((agent) => (
+          {runningAgents.map((agent) => (
             <AgentTerminal
               key={[
                 workspace?.root || "workspace",
@@ -1090,24 +1387,27 @@ function App() {
               ].join(":")}
               agent={agent}
               active={activeAgentId === agent.id}
+              hidden={minimizedAgents.has(agent.id)}
               onFocus={() => setActiveAgentId(agent.id)}
               onNotice={setNotice}
             />
           ))}
-          {!terminalAgents.length ? (
+          {!visibleTerminalAgents.length ? (
             <div className="empty-state">
-              {enabledAgents.length
-                ? "Start an agent from the sidebar to open its terminal."
-                : (
-                  <>
-                    No agents are configured in AI Teams.
-                  </>
-                )}
+              {minimizedCount
+                ? `${minimizedCount} agent panel${minimizedCount > 1 ? "s are" : " is"} minimized. Click an agent in the sidebar to restore it.`
+                : enabledAgents.length
+                  ? "Start an agent from the sidebar to open its terminal."
+                  : (
+                    <>
+                      No agents are configured in AI Teams.
+                    </>
+                  )}
             </div>
           ) : null}
         </section>
 
-        <Composer ref={composerRef} agents={terminalAgents} documents={documents} activeAgentId={activeAgentId} onRoute={route} />
+        <Composer ref={composerRef} agents={runningAgents} documents={documents} activeAgentId={activeAgentId} onRoute={route} />
       </main>
     </div>
   );

@@ -13,6 +13,7 @@
     "smoke:tmux": "node scripts/tmux-runtime-smoke.cjs",
     "smoke:tmux-view": "node scripts/tmux-view-smoke.cjs",
     "release:check": "node scripts/release-check.cjs",
+    "release:check:full": "node scripts/release-check.cjs --full",
     "preview": "vite preview --host 127.0.0.1",
     "doctor": "python3 aiteam.py doctor"
   },

@@ -240,6 +240,7 @@ function createTmuxViewManager({
       nextState.windowId = windowResult.stdout.trim();
       await runTmuxAsync(["new-session", "-d", "-s", nextState.viewSession, "-t", baseSession]);
       await runTmuxAsync(["set-option", "-t", nextState.viewSession, "status", "off"], { check: false });
+      await runTmuxAsync(["set-option", "-t", nextState.viewSession, "mouse", "off"], { check: false });
       await runTmuxAsync(["set-option", "-t", nextState.viewSession, "prefix", "None"], { check: false });
       await runTmuxAsync(["set-option", "-t", nextState.viewSession, "prefix2", "None"], { check: false });
       await runTmuxAsync(["select-window", "-t", `${nextState.viewSession}:${nextState.windowId}`]);
@@ -303,7 +304,67 @@ function createTmuxViewManager({
     if (!state?.pty) {
       throw new Error(`Agent is not running: ${agentId}`);
     }
+    exitCopyMode(agentId);
     state.pty.write(String(data || ""));
+  }
+
+  function exitCopyMode(agentId) {
+    const state = states.get(agentId);
+    if (!state?.viewSession || !state.windowId) {
+      return;
+    }
+    void runTmuxAsync(["send-keys", "-t", `${state.viewSession}:${state.windowId}`, "-X", "cancel"], { check: false });
+  }
+
+  async function paneField(target, field) {
+    const result = await runTmuxAsync(["display-message", "-p", "-t", target, field], { check: false });
+    return result.status === 0 ? result.stdout.trim() : "";
+  }
+
+  async function scroll(agentId, lines) {
+    const state = states.get(agentId);
+    if (!state?.viewSession || !state.windowId) {
+      return false;
+    }
+    const count = Math.min(200, Math.max(1, Math.abs(Math.trunc(Number(lines) || 0))));
+    if (!count) {
+      return true;
+    }
+    const target = `${state.viewSession}:${state.windowId}`;
+    const result = await runTmuxAsync([
+      "display-message",
+      "-p",
+      "-t",
+      target,
+      "#{alternate_on}\t#{history_size}\t#{pane_in_mode}"
+    ], { check: false });
+    const [alternateOn, historySizeText, paneInModeText] = result.stdout.trim().split("\t");
+    const historySize = Number(historySizeText || 0);
+    const paneInMode = Number(paneInModeText || 0);
+    if (alternateOn === "1") {
+      await runTmuxAsync([
+        "send-keys",
+        "-t",
+        target,
+        "-N",
+        String(Math.min(count, 20)),
+        lines < 0 ? "Up" : "Down"
+      ], { check: false });
+      return true;
+    }
+    if (historySize <= 0) {
+      if (paneInMode > 0 && lines > 0) {
+        await runTmuxAsync(["send-keys", "-t", target, "-X", "cancel"], { check: false });
+      }
+      return false;
+    }
+    if (lines < 0) {
+      await runTmuxAsync(["copy-mode", "-e", "-t", target], { check: false });
+      await runTmuxAsync(["send-keys", "-t", target, "-X", "-N", String(count), "scroll-up"], { check: false });
+    } else {
+      await runTmuxAsync(["send-keys", "-t", target, "-X", "-N", String(count), "scroll-down"], { check: false });
+    }
+    return true;
   }
 
   function resize(agentId, cols, rows) {
@@ -369,6 +430,8 @@ function createTmuxViewManager({
     reset,
     isAttached,
     write,
+    exitCopyMode,
+    scroll,
     resize,
     pasteAndSubmit,
     snapshot,

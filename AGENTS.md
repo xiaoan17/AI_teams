@@ -12,7 +12,7 @@ Use this when testing against the real project agent configuration:
 npm run dev
 ```
 
-Current real-agent setup:
+Current real-agent setup (desktop app-level config in Electron userData, not the versioned `.aiteam/agents.json` template — see README "Agent Config Ownership"):
 
 - `codex`: enabled
 - `kimi`: enabled
@@ -42,11 +42,11 @@ npm run smoke:pty
 
 Do not leave app processes running after verification unless the user asks to keep the app open.
 
-Stop background dev processes with:
+Stop background dev processes from the repository root with:
 
 ```bash
-pkill -f '/Users/anbc/Desktop/AI_teams/node_modules/.bin/concurrently' 2>/dev/null || true
-pkill -f '/Users/anbc/Desktop/AI_teams/node_modules/.bin/vite' 2>/dev/null || true
-pkill -f '/Users/anbc/Desktop/AI_teams/node_modules/electron/dist/Electron.app/Contents/MacOS/Electron' 2>/dev/null || true
+pkill -f "$PWD/node_modules/.bin/concurrently" 2>/dev/null || true
+pkill -f "$PWD/node_modules/.bin/vite" 2>/dev/null || true
+pkill -f "$PWD/node_modules/electron/dist/Electron.app/Contents/MacOS/Electron" 2>/dev/null || true
 python3 aiteam.py stop 2>/dev/null || true
 ```

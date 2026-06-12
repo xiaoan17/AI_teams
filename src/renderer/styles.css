@@ -289,11 +289,17 @@ button {
 }
 
 .agent-row {
-  grid-template-columns: 9px minmax(0, 1fr) 26px;
+  grid-template-columns: 9px minmax(0, 1fr) auto;
   gap: 7px;
   align-items: center;
   min-height: 40px;
   padding: 6px 8px;
+}
+
+.agent-actions {
+  display: flex;
+  align-items: center;
+  gap: 7px;
 }
 
 .agent-row-active {
@@ -303,6 +309,25 @@ button {
 
 .agent-row-disabled {
   opacity: 0.52;
+}
+
+.agent-row-minimized .agent-main span {
+  color: #8d9aa6;
+}
+
+/* Status dots keep their real color while minimized; pulse waiting_input so
+   confirmation prompts are not missed behind a hidden panel. */
+.agent-row-minimized .agent-dot.status-waiting {
+  animation: agent-dot-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes agent-dot-pulse {
+  0%, 100% {
+    box-shadow: 0 0 0 0 rgba(242, 193, 78, 0.55);
+  }
+  50% {
+    box-shadow: 0 0 0 4px rgba(242, 193, 78, 0);
+  }
 }
 
 .agent-dot,
@@ -342,6 +367,55 @@ button {
   background: #242d35;
   color: #e8edf2;
   cursor: pointer;
+}
+
+.window-control {
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 50%;
+  color: rgba(15, 19, 22, 0.78);
+  font-size: 13px;
+  font-weight: 800;
+  line-height: 1;
+  cursor: pointer;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.26), 0 1px 2px rgba(0, 0, 0, 0.28);
+  transition: transform 120ms ease, filter 120ms ease, box-shadow 120ms ease;
+}
+
+.window-control:hover {
+  filter: brightness(1.08) saturate(1.08);
+  transform: translateY(-1px);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.32), 0 3px 7px rgba(0, 0, 0, 0.3);
+}
+
+.window-control-close {
+  background: #ff5f57;
+}
+
+.window-control-minimize {
+  background: #ffbd2e;
+}
+
+.window-control-expand {
+  background: #28c840;
+}
+
+.window-control-muted {
+  opacity: 0.46;
+  cursor: default;
+}
+
+.window-control-muted:hover {
+  filter: none;
+  transform: none;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.26), 0 1px 2px rgba(0, 0, 0, 0.28);
+}
+
+.window-control-emphasis {
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.28), 0 0 0 3px rgba(40, 200, 64, 0.16);
 }
 
 .disabled-label {
@@ -657,6 +731,12 @@ button {
 
 .terminal-card-active {
   border-color: #5f83b6;
+}
+
+/* Minimized panels stay mounted (xterm buffer + subscriptions intact) and are
+   only removed from layout; restoring re-fits instead of replaying logs. */
+.terminal-card-hidden {
+  display: none;
 }
 
 .terminal-header {

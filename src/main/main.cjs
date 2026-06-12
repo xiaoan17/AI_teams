@@ -47,6 +47,8 @@ const waitingPatterns = [
 const agents = new Map();
 let mainWindow = null;
 let nodePty = null;
+let documentsWatcher = null;
+let documentsChangeTimer = null;
 
 function setWorkspaceRoot(root) {
   WORKSPACE_ROOT = path.resolve(root);
@@ -352,6 +354,49 @@ function readDocumentPins() {
 
 function writeDocumentPins(pins) {
   writeJson(DOCUMENT_PINS_PATH, { pinned: [...pins].sort() });
+}
+
+function emitDocumentsChanged() {
+  emit("documents:changed", {
+    root: DOCS_DIR,
+    workspaceRoot: WORKSPACE_ROOT,
+    changedAt: nowIso()
+  });
+}
+
+function scheduleDocumentsChanged() {
+  if (documentsChangeTimer) {
+    clearTimeout(documentsChangeTimer);
+  }
+  documentsChangeTimer = setTimeout(() => {
+    documentsChangeTimer = null;
+    emitDocumentsChanged();
+  }, 200);
+}
+
+function stopDocumentsWatcher() {
+  if (documentsChangeTimer) {
+    clearTimeout(documentsChangeTimer);
+    documentsChangeTimer = null;
+  }
+  if (documentsWatcher) {
+    documentsWatcher.close();
+    documentsWatcher = null;
+  }
+}
+
+function startDocumentsWatcher() {
+  stopDocumentsWatcher();
+  ensureDir(DOCS_DIR);
+  try {
+    documentsWatcher = fs.watch(DOCS_DIR, { recursive: true }, scheduleDocumentsChanged);
+    documentsWatcher.on("error", (error) => {
+      console.warn(`documents watcher failed: ${error.message}`);
+      stopDocumentsWatcher();
+    });
+  } catch (error) {
+    console.warn(`documents watcher failed: ${error.message}`);
+  }
 }
 
 function isDocumentFile(name) {
@@ -815,7 +860,7 @@ function tmuxPaneDead(pane) {
 }
 
 function tmuxCapturePane(pane, lines = TERMINAL_SNAPSHOT_LINES) {
-  return runTmux(["capture-pane", "-p", "-e", "-J", "-S", `-${lines}`, "-t", pane]).stdout;
+  return runTmux(["capture-pane", "-p", "-e", "-S", `-${lines}`, "-t", pane]).stdout;
 }
 
 function tailFile(file, maxChars = TERMINAL_REPLAY_BUFFER_CHARS) {
@@ -1402,10 +1447,29 @@ function tmuxResizeAgent(agentId, cols, rows) {
   tmuxViews.resize(agentId, cols, rows);
 }
 
+function tmuxScrollAgent(agentId, lines) {
+  return tmuxViews.scroll(agentId, lines);
+}
+
 function tmuxAgentTerminalSnapshot(agentId) {
   const runtime = readRuntime();
   const runtimeAgent = runtime.agents?.[agentId];
   const viewSnapshot = tmuxViews.snapshot(agentId);
+  if (runtimeAgent?.pane && tmuxPaneDead(runtimeAgent.pane) === false) {
+    try {
+      const data = tmuxCapturePane(runtimeAgent.pane, TERMINAL_SNAPSHOT_LINES);
+      return {
+        id: agentId,
+        seq: viewSnapshot?.seq || 0,
+        data,
+        source: "tmux-capture",
+        truncated: data.split("\n").length >= TERMINAL_SNAPSHOT_LINES,
+        backend: "tmux"
+      };
+    } catch (_error) {
+      // Fall back to the view/log replay paths below when tmux capture is unavailable.
+    }
+  }
   if (viewSnapshot) {
     return {
       id: agentId,
@@ -1576,6 +1640,7 @@ const directPtyBackend = {
   stopAll: directStopAllAgents,
   writeInput: directWriteToAgent,
   resizeAgent: directResizeAgent,
+  scrollAgent: () => false,
   snapshot: directAgentTerminalSnapshot,
   preflightRoute: directPreflightRoute,
   pasteAndSubmit: directPasteAndSubmitToAgent,
@@ -1590,6 +1655,7 @@ const tmuxBackend = {
   stopAll: tmuxStopAllAgents,
   writeInput: tmuxWriteInput,
   resizeAgent: tmuxResizeAgent,
+  scrollAgent: tmuxScrollAgent,
   snapshot: tmuxAgentTerminalSnapshot,
   preflightRoute: tmuxPreflightRoute,
   pasteAndSubmit: tmuxPasteAndSubmitAgent,
@@ -1646,6 +1712,10 @@ function writeToAgent(agentId, data) {
 
 function resizeAgent(agentId, cols, rows) {
   return getTerminalBackend().resizeAgent(agentId, cols, rows);
+}
+
+function scrollAgent(agentId, lines) {
+  return getTerminalBackend().scrollAgent?.(agentId, lines) || false;
 }
 
 async function releaseCurrentWorkspaceBackend() {
@@ -1889,9 +1959,11 @@ async function switchWorkspace(targetRoot) {
     rememberWorkspace(nextRoot);
     return workspaceInfo();
   }
+  stopDocumentsWatcher();
   await releaseCurrentWorkspaceBackend();
   setWorkspaceRoot(nextRoot);
   ensureWorkspaceDirs();
+  startDocumentsWatcher();
   rememberWorkspace(nextRoot);
   const info = workspaceInfo();
   emit("workspace:changed", info);
@@ -1942,6 +2014,7 @@ app.whenReady().then(() => {
     setWorkspaceRoot(preparedRoot);
   }
   ensureWorkspaceDirs();
+  startDocumentsWatcher();
   rememberWorkspace(WORKSPACE_ROOT);
   createWindow();
 });
@@ -1959,6 +2032,7 @@ app.on("before-quit", (event) => {
   }
   event.preventDefault();
   backendReleaseBeforeQuit = true;
+  stopDocumentsWatcher();
   releaseCurrentWorkspaceBackend()
     .catch((error) => console.warn(`backend release before quit failed: ${error.message}`))
     .finally(() => app.quit());
@@ -1975,6 +2049,7 @@ ipcMain.handle("agents:stop", (_event, agentId) => stopAgent(agentId));
 ipcMain.handle("agents:stopAll", () => stopAllAgents());
 ipcMain.handle("agents:input", (_event, agentId, data) => writeToAgent(agentId, data));
 ipcMain.handle("agents:resize", (_event, agentId, cols, rows) => resizeAgent(agentId, cols, rows));
+ipcMain.handle("agents:scroll", (_event, agentId, lines) => scrollAgent(agentId, lines));
 ipcMain.handle("route:send", (_event, message, explicitTargets = [], options = {}) => routeMessage(message, explicitTargets, options));
 ipcMain.handle("tasks:list", () => listTasks());
 ipcMain.handle("documents:list", (_event, folder = "") => listDocuments(folder));

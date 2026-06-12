@@ -184,7 +184,7 @@ def default_config(root: Path, *, demo: bool = False) -> dict[str, Any]:
                 "name": name,
                 "command": cat_bin,
                 "args": [],
-                "cwd": str(root),
+                "cwd": ".",
                 "enabled": True,
                 "permission_mode": "demo-echo",
             }
@@ -197,7 +197,7 @@ def default_config(root: Path, *, demo: bool = False) -> dict[str, Any]:
                 "name": "Codex",
                 "command": "codex",
                 "args": [],
-                "cwd": str(root),
+                "cwd": ".",
                 "enabled": False,
                 "permission_mode": "configure-before-start",
             },
@@ -206,7 +206,7 @@ def default_config(root: Path, *, demo: bool = False) -> dict[str, Any]:
                 "name": "Claude Code",
                 "command": "claude",
                 "args": [],
-                "cwd": str(root),
+                "cwd": ".",
                 "enabled": False,
                 "permission_mode": "configure-before-start",
             },
@@ -215,7 +215,7 @@ def default_config(root: Path, *, demo: bool = False) -> dict[str, Any]:
                 "name": "Kimi",
                 "command": "kimi",
                 "args": [],
-                "cwd": str(root),
+                "cwd": ".",
                 "enabled": False,
                 "permission_mode": "configure-before-start",
             },
@@ -737,6 +737,24 @@ def command_binary(agent: dict[str, Any]) -> str | None:
     return parts[0] if parts else None
 
 
+def desktop_agent_config_path() -> Path:
+    """Where the desktop app stores its own agent config (Electron userData).
+
+    The CLI never reads this file; `doctor` reports it so users know which
+    config the desktop app actually uses.
+    """
+    override = os.environ.get("AITEAMS_AGENT_CONFIG_PATH", "").strip()
+    if override:
+        return Path(override).expanduser()
+    if sys.platform == "darwin":
+        base = Path.home() / "Library" / "Application Support"
+    elif os.name == "nt":
+        base = Path(os.environ.get("APPDATA", str(Path.home() / "AppData" / "Roaming")))
+    else:
+        base = Path(os.environ.get("XDG_CONFIG_HOME", str(Path.home() / ".config")))
+    return base / "ai-teams" / "agents.json"
+
+
 def cmd_doctor(args: argparse.Namespace) -> int:
     root = args.root.resolve()
     failures = 0
@@ -750,6 +768,10 @@ def cmd_doctor(args: argparse.Namespace) -> int:
 
     report(shutil.which("tmux") is not None, "tmux", "required for PTY hosting")
     report(config_path(root).exists(), "config", str(config_path(root)))
+    desktop_config = desktop_agent_config_path()
+    desktop_state = "present" if desktop_config.exists() else "created on first desktop launch"
+    print(f"info\tcli_config\t{config_path(root)} (canonical for aiteam.py and demo mode)")
+    print(f"info\tdesktop_config\t{desktop_config} ({desktop_state}; override with AITEAMS_AGENT_CONFIG_PATH)")
     if not config_path(root).exists():
         return 1
 

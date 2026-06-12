@@ -45,7 +45,7 @@ Keep `agents.json` as the source of truth for executable agents. Extend entries 
   "name": "Codex",
   "command": "codex",
   "args": ["--no-alt-screen"],
-  "cwd": "/Users/anbc/Desktop/AI_teams",
+  "cwd": ".",
   "enabled": true,
   "provider": "openai",
   "capabilities": ["terminal", "handoff"],

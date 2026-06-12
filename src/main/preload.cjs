@@ -13,6 +13,7 @@ contextBridge.exposeInMainWorld("aiTeams", {
   stopAllAgents: () => ipcRenderer.invoke("agents:stopAll"),
   sendInput: (agentId, data) => ipcRenderer.invoke("agents:input", agentId, data),
   resizeAgent: (agentId, cols, rows) => ipcRenderer.invoke("agents:resize", agentId, cols, rows),
+  scrollAgent: (agentId, lines) => ipcRenderer.invoke("agents:scroll", agentId, lines),
   routeMessage: (message, targets = [], options = {}) => ipcRenderer.invoke("route:send", message, targets, options),
   listTasks: () => ipcRenderer.invoke("tasks:list"),
   listDocuments: (folder = "") => ipcRenderer.invoke("documents:list", folder),
@@ -42,6 +43,12 @@ contextBridge.exposeInMainWorld("aiTeams", {
     ipcRenderer.on("workspace:changed", wrapped);
     listeners.add(["workspace:changed", wrapped]);
     return () => ipcRenderer.removeListener("workspace:changed", wrapped);
+  },
+  onDocumentsChanged: (callback) => {
+    const wrapped = (_event, payload) => callback(payload);
+    ipcRenderer.on("documents:changed", wrapped);
+    listeners.add(["documents:changed", wrapped]);
+    return () => ipcRenderer.removeListener("documents:changed", wrapped);
   },
   removeAllListeners: () => {
     for (const [channel, wrapped] of listeners) {

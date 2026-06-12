@@ -1,7 +1,7 @@
 # Feature Spec: Tmux-Backed Terminal Sessions
 
 Date: 2026-06-11
-Status: Draft for implementation
+Status: Implemented (core slices 1-6; external terminal attach in slice 7 deferred by design)
 Owner: AI Teams
 
 ## Summary

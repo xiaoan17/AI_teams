@@ -1,7 +1,7 @@
 # Feature Spec: Broadcast Routing and Claude Code Integration
 
 Date: 2026-06-11
-Status: Draft for implementation
+Status: Implemented
 Owner: AI Teams
 
 ## Summary
@@ -244,7 +244,7 @@ Claude Code should remain a normal agent config entry:
   "name": "Claude Code",
   "command": "claude",
   "args": [],
-  "cwd": "/Users/anbc/Desktop/AI_teams",
+  "cwd": ".",
   "enabled": false,
   "permission_mode": "configure-before-start"
 }
