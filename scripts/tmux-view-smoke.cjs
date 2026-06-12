@@ -106,28 +106,28 @@ function readLog(rawLog) {
       throw new Error("Timed out waiting for history lines in raw log.");
     }
 
-    manager.scroll(agentId, -5);
-    const scrolled = await waitFor(async () => {
-      const result = await runTmuxAsync(["display-message", "-p", "-t", `${session}-view-${agentId}:0`, "#{pane_in_mode}\t#{scroll_position}"], { check: false });
-      const [inModeText, positionText = "0"] = result.stdout.trim().split("\t");
-      const inMode = Number(inModeText || 0);
-      const position = Number(positionText || 0);
-      return result.status === 0 && inMode > 0 && position > 0;
-    }, 3000);
-    if (!scrolled) {
-      throw new Error("Timed out waiting for tmux view history scroll.");
-    }
-
-    manager.scroll(agentId, 500);
-    const atBottom = await waitFor(async () => {
+    await manager.scroll(agentId, -5);
+    const stayedLive = await waitFor(async () => {
       const result = await runTmuxAsync(["display-message", "-p", "-t", `${session}-view-${agentId}:0`, "#{pane_in_mode}\t#{scroll_position}"], { check: false });
       const [inModeText, positionText = "0"] = result.stdout.trim().split("\t");
       const inMode = Number(inModeText || 0);
       const position = Number(positionText || 0);
       return result.status === 0 && inMode === 0 && position === 0;
     }, 3000);
-    if (!atBottom) {
-      throw new Error("Timed out waiting for tmux view scroll to return to live output.");
+    if (!stayedLive) {
+      throw new Error("tmux view scroll should not enter copy-mode.");
+    }
+
+    await manager.scroll(agentId, 500);
+    const stillLive = await waitFor(async () => {
+      const result = await runTmuxAsync(["display-message", "-p", "-t", `${session}-view-${agentId}:0`, "#{pane_in_mode}\t#{scroll_position}"], { check: false });
+      const [inModeText, positionText = "0"] = result.stdout.trim().split("\t");
+      const inMode = Number(inModeText || 0);
+      const position = Number(positionText || 0);
+      return result.status === 0 && inMode === 0 && position === 0;
+    }, 3000);
+    if (!stillLive) {
+      throw new Error("tmux view scroll should leave live output attached.");
     }
 
     runTmux(["kill-session", "-t", session], { check: false });

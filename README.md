@@ -28,9 +28,25 @@ npm run doctor   # checks tmux, config, agent commands
 npm run smoke    # checks tmux panes, capture, paste, cleanup
 ```
 
-## Quick Start (safe demo)
+## Quick Start
 
-Demo mode uses `/bin/cat` agents — no Codex, Claude, Kimi, or any paid CLI is called.
+AI Teams is meant to run your own agent CLIs locally. The desktop app uses an app-level agent config, so you can switch projects without re-creating the same Codex / Claude Code / Kimi setup each time.
+
+```bash
+npm run dev
+```
+
+On first launch, the desktop app creates its user-level config at `~/Library/Application Support/ai-teams/agents.json` on macOS. The default desktop config enables Codex, Claude Code, and Kimi; disable or edit any agent you do not use in that user-level config.
+
+Run this when you want to inspect config paths or troubleshoot missing CLIs:
+
+```bash
+npm run doctor
+```
+
+## Safe Demo
+
+Demo mode is only for no-side-effect UI and routing tests. It uses `/bin/cat` agents, so no Codex, Claude, Kimi, or paid CLI is called.
 
 ```bash
 npm run dev:demo
@@ -50,13 +66,7 @@ The checked-in `.aiteam/agents.json` in this repository is a safe template (all 
 
 Run `python3 aiteam.py doctor` to print both config paths and validate the CLI config.
 
-## Real Agent Mode
-
-For the **desktop app**, edit the user-level config reported by `doctor` (or just launch once to create it with defaults), then:
-
-```bash
-npm run dev
-```
+## CLI Real Agent Mode
 
 For the **CLI / tmux router**, the checked-in `.aiteam/agents.json` is a safe template with all real agents disabled. Enable only the agent CLIs you have installed:
 
@@ -72,7 +82,7 @@ Keep uninstalled agents disabled:
 python3 aiteam.py agent set kimi --disable
 ```
 
-Real-agent sessions run in tmux, so closing or refreshing Electron does not kill them. Stop them with the app's `End` button or:
+Real-agent sessions run in tmux, so closing or refreshing Electron does not kill them. Stop them with the app's `Stop` button or:
 
 ```bash
 python3 aiteam.py stop

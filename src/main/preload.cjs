@@ -7,6 +7,8 @@ contextBridge.exposeInMainWorld("aiTeams", {
   switchWorkspace: (targetRoot) => ipcRenderer.invoke("workspace:switch", targetRoot),
   chooseWorkspace: () => ipcRenderer.invoke("workspace:choose"),
   listAgents: () => ipcRenderer.invoke("agents:list"),
+  listAgentPresets: () => ipcRenderer.invoke("agents:presets"),
+  importAgents: (payload, options = {}) => ipcRenderer.invoke("agents:import", payload, options),
   getAgentSnapshot: (agentId) => ipcRenderer.invoke("agents:snapshot", agentId),
   startAgent: (agentId) => ipcRenderer.invoke("agents:start", agentId),
   stopAgent: (agentId) => ipcRenderer.invoke("agents:stop", agentId),

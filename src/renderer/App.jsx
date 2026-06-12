@@ -4,6 +4,7 @@ import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
 import "./styles.css";
+import { DEFAULT_THEME_ID, themePresets, themeToCssVars } from "./themes.js";
 
 const browserPreviewApi = {
   getWorkspace: async () => ({
@@ -84,7 +85,12 @@ const browserPreviewApi = {
               relativePath: "docs/features/20260611-broadcast-routing-and-claude-code.md",
               folder: "features",
               updatedAt: new Date().toISOString(),
-              pinned: true
+              pinned: true,
+              fields: {
+                status: "Implemented",
+                tags: [],
+                state: "finish"
+              }
             }
           ]
         }
@@ -98,7 +104,12 @@ const browserPreviewApi = {
         relativePath: "docs/features/20260611-broadcast-routing-and-claude-code.md",
         folder: "features",
         updatedAt: new Date().toISOString(),
-        pinned: true
+        pinned: true,
+        fields: {
+          status: "Implemented",
+          tags: [],
+          state: "finish"
+        }
       }
     ]
   }),
@@ -112,7 +123,39 @@ const browserPreviewApi = {
   scrollAgent: async () => false,
   routeMessage: async (message, targets) => ({ targets: targets.length ? targets : ["codex"], message }),
   openPath: async () => {},
-  onAgentData: () => () => {},
+  listAgentPresets: async () => [
+    { id: "codex", name: "Codex", command: "codex", args: [], cwd: ".", enabled: true },
+    { id: "claude", name: "Claude Code", command: "claude", args: [], cwd: ".", enabled: true },
+    { id: "kimi", name: "Kimi", command: "kimi", args: [], cwd: ".", enabled: true }
+  ],
+  importAgents: async (payload, options = {}) => {
+    const drafts = Array.isArray(payload)
+      ? payload
+      : Array.isArray(payload?.agents)
+        ? payload.agents
+        : [payload];
+    const agents = drafts.map((draft) => ({
+      ...draft,
+      id: String(draft?.id || "").trim(),
+      name: String(draft?.name || draft?.id || ""),
+      command: String(draft?.command || "").trim(),
+      args: Array.isArray(draft?.args) ? draft.args : [],
+      cwd: draft?.cwd || ".",
+      enabled: draft?.enabled !== false,
+      warnings: ["Browser preview: imports are not persisted."],
+      errors: draft?.id && draft?.command ? [] : ["Missing required field: id and command are required."]
+    }));
+    const ok = agents.every((agent) => !agent.errors.length);
+    if (!options.dryRun && !ok) {
+      throw new Error(agents.flatMap((agent) => agent.errors).join(" "));
+    }
+    return { ok, agents, imported: ok && !options.dryRun ? agents.map((agent) => agent.id) : [] };
+  },
+  // Emit small sample output in browser preview without real agents.
+  onAgentData: (callback) => {
+    const timer = setInterval(() => callback({ id: "codex", data: "·" }), 1400);
+    return () => clearInterval(timer);
+  },
   onAgentStatus: () => () => {},
   onRouteVerify: () => () => {},
   onWorkspaceChanged: () => () => {}
@@ -195,19 +238,19 @@ function snapshotToTerminalData(data) {
 
 const statusLabels = {
   stopped: "Stopped",
-  starting: "Starting",
-  running_or_idle: "Ready",
+  starting: "Running",
+  running_or_idle: "Running",
   waiting_input: "Needs Input",
-  exited: "Exited",
+  exited: "Stopped",
   error: "Error",
-  missing_runtime: "Missing Runtime",
-  pane_missing: "Pane Missing"
+  missing_runtime: "Error",
+  pane_missing: "Error"
 };
 
 function statusClass(status) {
   if (status === "waiting_input") return "status-waiting";
   if (status === "running_or_idle" || status === "starting") return "status-running";
-  if (status === "exited" || status === "error" || status === "missing_runtime" || status === "pane_missing") return "status-error";
+  if (status === "error" || status === "missing_runtime" || status === "pane_missing") return "status-error";
   return "status-stopped";
 }
 
@@ -279,6 +322,19 @@ function normalizeSearch(value) {
   return String(value || "").trim().toLowerCase();
 }
 
+const documentFieldFilters = [
+  { id: "all", label: "All" },
+  { id: "todo", label: "Todo" },
+  { id: "finish", label: "Finish" }
+];
+
+function documentStateLabel(document) {
+  const state = document?.fields?.state;
+  if (state === "finish") return "Finish";
+  if (state === "todo") return "Todo";
+  return "";
+}
+
 function nodeMatchesSearch(node, query) {
   if (!query) return true;
   return [
@@ -289,18 +345,35 @@ function nodeMatchesSearch(node, query) {
   ].some((value) => String(value || "").toLowerCase().includes(query));
 }
 
-function filterDocumentTree(node, query) {
+function nodeMatchesDocumentField(node, fieldFilter) {
+  if (!fieldFilter || fieldFilter === "all") return true;
+  const fields = node.fields || {};
+  if (fields.state === fieldFilter) return true;
+  return [
+    fields.status,
+    ...(Array.isArray(fields.tags) ? fields.tags : [])
+  ].some((value) => String(value || "").toLowerCase().includes(fieldFilter));
+}
+
+function countDocumentTree(node) {
+  if (!node) return 0;
+  if (node.type === "document") return 1;
+  return (node.children || []).reduce((total, child) => total + countDocumentTree(child), 0);
+}
+
+function filterDocumentTree(node, query, fieldFilter = "all", queryMatchedAncestor = false) {
   if (!node) return null;
-  if (!query) return node;
+  const hasQuery = Boolean(query);
+  const hasFieldFilter = fieldFilter && fieldFilter !== "all";
+  if (!hasQuery && !hasFieldFilter) return node;
   const matchesNode = nodeMatchesSearch(node, query);
   if (node.type === "document") {
-    return matchesNode ? node : null;
+    const matchesSearch = !hasQuery || queryMatchedAncestor || matchesNode;
+    return matchesSearch && nodeMatchesDocumentField(node, fieldFilter) ? node : null;
   }
-  if (matchesNode) {
-    return node;
-  }
+  const childQueryMatched = queryMatchedAncestor || (hasQuery && matchesNode);
   const children = (node.children || [])
-    .map((child) => filterDocumentTree(child, query))
+    .map((child) => filterDocumentTree(child, query, fieldFilter, childQueryMatched))
     .filter(Boolean);
   if (!children.length) return null;
   return {
@@ -313,7 +386,19 @@ function filterDocumentTree(node, query) {
 function formatDocumentTime(value) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return "";
-  return date.toLocaleString();
+  const now = Date.now();
+  const diffMs = Math.max(0, now - date.getTime());
+  const minute = 60 * 1000;
+  const hour = 60 * minute;
+  const day = 24 * hour;
+  if (diffMs < minute) return "now";
+  if (diffMs < hour) return `${Math.floor(diffMs / minute)}m ago`;
+  if (diffMs < day) return `${Math.floor(diffMs / hour)}h ago`;
+  if (diffMs < 7 * day) return `${Math.floor(diffMs / day)}d ago`;
+  const sameYear = new Date(now).getFullYear() === date.getFullYear();
+  return date.toLocaleDateString(undefined, sameYear
+    ? { month: "short", day: "numeric" }
+    : { year: "numeric", month: "short", day: "numeric" });
 }
 
 function DocumentTreeNode({
@@ -321,6 +406,8 @@ function DocumentTreeNode({
   depth = 0,
   expandedFolders,
   forceExpanded,
+  handoffPath,
+  showPath,
   onToggleFolder,
   onOpen,
   onInsertDocumentPath,
@@ -355,6 +442,8 @@ function DocumentTreeNode({
                 depth={depth + 1}
                 expandedFolders={expandedFolders}
                 forceExpanded={forceExpanded}
+                handoffPath={handoffPath}
+                showPath={showPath}
                 onToggleFolder={onToggleFolder}
                 onOpen={onOpen}
                 onInsertDocumentPath={onInsertDocumentPath}
@@ -367,13 +456,32 @@ function DocumentTreeNode({
     );
   }
 
+  const stateLabel = documentStateLabel(node);
+  const updatedLabel = formatDocumentTime(node.updatedAt);
+
   return (
-    <div className={`tree-row document-row ${node.pinned ? "document-row-pinned" : ""}`} style={{ "--tree-depth": depth }}>
+    <div
+      className={[
+        "tree-row",
+        "document-row",
+        node.pinned ? "document-row-pinned" : "",
+        handoffPath && node.path === handoffPath ? "document-row-handoff" : ""
+      ].filter(Boolean).join(" ")}
+      style={{ "--tree-depth": depth }}
+    >
       <button className="document-open" type="button" onClick={() => onOpen(node.path)} title={node.relativePath}>
         <span>{node.name}</span>
         <small>
-          {node.pinned ? "Pinned · " : ""}
-          {documentDisplayPath(node)} · {formatDocumentTime(node.updatedAt)}
+          {stateLabel ? (
+            <>
+              <span className={`document-status document-status-${node.fields?.state}`}>
+                {stateLabel}
+              </span>
+              {" · "}
+            </>
+          ) : null}
+          {showPath ? `${documentDisplayPath(node)} · ` : ""}
+          {updatedLabel}
         </small>
       </button>
       <button
@@ -398,7 +506,7 @@ function DocumentTreeNode({
   );
 }
 
-function AgentTerminal({ agent, active, hidden, onFocus, onNotice }) {
+function AgentTerminal({ agent, active, hidden, terminalTheme, onFocus, onNotice }) {
   const containerRef = useRef(null);
   const termRef = useRef(null);
   const fitRef = useRef(null);
@@ -410,6 +518,7 @@ function AgentTerminal({ agent, active, hidden, onFocus, onNotice }) {
   const pendingTerminalOutputRef = useRef("");
   const snapshotReadyRef = useRef(false);
   const outputWriteDepthRef = useRef(0);
+  const terminalThemeRef = useRef(terminalTheme);
 
   useEffect(() => {
     if (!containerRef.current || termRef.current) return;
@@ -430,12 +539,7 @@ function AgentTerminal({ agent, active, hidden, onFocus, onNotice }) {
       macOptionClickForcesSelection: true,
       rescaleOverlappingGlyphs: true,
       scrollback: 8000,
-      theme: {
-        background: "#0d1114",
-        foreground: "#d9e0e8",
-        cursor: "#f2c14e",
-        selectionBackground: "#29445d"
-      }
+      theme: terminalThemeRef.current
     });
     const refreshViewport = () => {
       if (disposed || !termRef.current) return;
@@ -466,34 +570,6 @@ function AgentTerminal({ agent, active, hidden, onFocus, onNotice }) {
     terminal.loadAddon(fitAddon);
     terminal.open(containerRef.current);
     resetTerminalMouseModes(terminal);
-    terminal.attachCustomWheelEventHandler((event) => {
-      const lineHeight = Math.max(
-        1,
-        terminal.element?.querySelector(".xterm-rows > div")?.getBoundingClientRect().height || 15
-      );
-      const pageLines = Math.max(1, terminal.rows - 1);
-      const rawLines = event.deltaMode === 1
-        ? event.deltaY
-        : event.deltaMode === 2
-          ? event.deltaY * pageLines
-          : event.deltaY / lineHeight;
-      const lines = Math.trunc(rawLines) || Math.sign(rawLines);
-      if (lines) {
-        api.scrollAgent(agent.id, lines).then((handled) => {
-          if (!handled) {
-            terminal.scrollLines(lines);
-            refreshViewport();
-          }
-        }).catch(() => {
-          terminal.scrollLines(lines);
-          refreshViewport();
-        });
-        refreshViewport();
-      }
-      event.preventDefault();
-      event.stopPropagation();
-      return false;
-    });
     const fitAndSync = () => {
       if (disposed || !containerRef.current || !termRef.current) return;
       const box = containerRef.current.getBoundingClientRect();
@@ -609,6 +685,15 @@ function AgentTerminal({ agent, active, hidden, onFocus, onNotice }) {
     return () => timers.forEach((timer) => clearTimeout(timer));
   }, [hidden]);
 
+  // Re-theme the live terminal in place: no dispose, no scrollback loss.
+  useEffect(() => {
+    terminalThemeRef.current = terminalTheme;
+    if (termRef.current) {
+      termRef.current.options.theme = terminalTheme;
+      scheduleRefreshRef.current?.();
+    }
+  }, [terminalTheme]);
+
   useEffect(() => {
     if (!active || hidden || !termRef.current) return;
     termRef.current.focus();
@@ -638,21 +723,38 @@ function AgentTerminal({ agent, active, hidden, onFocus, onNotice }) {
     return off;
   }, [agent.id]);
 
+  // Only waiting_input breathes: it is the one status that asks the user to act.
+  const breathClass = stoppedOrExited(agent)
+    ? ""
+    : agent.status === "waiting_input"
+      ? "terminal-card-working breath-waiting"
+      : "";
+  const rawStatus = agent.status || "unknown";
+  const statusTitle = [
+    `Raw status: ${rawStatus}`,
+    agent.reason ? `Reason: ${agent.reason}` : ""
+  ].filter(Boolean).join("\n");
+  const terminalTitle = [
+    agent.name,
+    [agent.backend || "direct-pty", agent.pane].filter(Boolean).join(" ")
+  ].filter(Boolean).join(" · ");
+
   return (
     <section
-      className={`terminal-card ${active ? "terminal-card-active" : ""} ${hidden ? "terminal-card-hidden" : ""}`}
+      className={[
+        "terminal-card",
+        active ? "terminal-card-active" : "",
+        hidden ? "terminal-card-hidden" : "",
+        breathClass
+      ].filter(Boolean).join(" ")}
       onPointerDownCapture={onFocus}
       onClick={onFocus}
     >
       <header className="terminal-header">
         <div>
-          <div className="terminal-name">{agent.name}</div>
-          <div className="terminal-meta">
-            {agent.backend || "direct-pty"}
-            {agent.pane ? ` ${agent.pane}` : ""}
-          </div>
+          <div className="terminal-name" title={terminalTitle}>{agent.name}</div>
         </div>
-        <div className={`status-pill ${statusClass(agent.status)}`}>
+        <div className={`status-pill ${statusClass(agent.status)}`} title={statusTitle}>
           <span className="status-dot" />
           {statusLabels[agent.status] || agent.status}
         </div>
@@ -669,6 +771,13 @@ function Sidebar({
   activeAgentId,
   minimizedAgents,
   collapsed,
+  themeId,
+  themes,
+  effectsEnabled,
+  handoffPath,
+  onThemeChange,
+  onToggleEffects,
+  onOpenImport,
   onToggleCollapsed,
   onSelectAgent,
   onSelectWorkspace,
@@ -687,9 +796,15 @@ function Sidebar({
   const recentWorkspaces = workspace?.recentWorkspaces || [];
   const recentWorkspaceOptions = recentWorkspaces.filter((item) => item.root !== workspace?.root);
   const [documentSearch, setDocumentSearch] = useState("");
+  const [documentFieldFilter, setDocumentFieldFilter] = useState("all");
   const [expandedFolders, setExpandedFolders] = useState(() => defaultExpandedFolders(documentList));
   const searchQuery = normalizeSearch(documentSearch);
-  const filteredTree = useMemo(() => filterDocumentTree(documentTree, searchQuery), [documentTree, searchQuery]);
+  const filteredTree = useMemo(
+    () => filterDocumentTree(documentTree, searchQuery, documentFieldFilter),
+    [documentTree, searchQuery, documentFieldFilter]
+  );
+  const filteredDocumentCount = useMemo(() => countDocumentTree(filteredTree), [filteredTree]);
+  const hasDocumentFilter = Boolean(searchQuery) || documentFieldFilter !== "all";
 
   useEffect(() => {
     setExpandedFolders((current) => {
@@ -704,6 +819,28 @@ function Sidebar({
       return changed ? next : current;
     });
   }, [documentList]);
+
+  // Keep the handoff document's row reachable: expand its ancestor folders
+  // whenever a document is armed in the composer.
+  const handoffDocument = useMemo(
+    () => (handoffPath ? documentList.find((document) => document.path === handoffPath) || null : null),
+    [documentList, handoffPath]
+  );
+
+  useEffect(() => {
+    if (!handoffDocument) return;
+    setExpandedFolders((current) => {
+      const next = new Set(current);
+      let changed = false;
+      for (const key of folderAncestorKeys(handoffDocument.folder)) {
+        if (!next.has(key)) {
+          next.add(key);
+          changed = true;
+        }
+      }
+      return changed ? next : current;
+    });
+  }, [handoffDocument]);
 
   const toggleFolder = useCallback((key) => {
     setExpandedFolders((current) => {
@@ -729,6 +866,35 @@ function Sidebar({
             <h1>AI Teams</h1>
           </div>
           <div className="brand-actions">
+            <details className="sidebar-settings">
+              <summary
+                className="sidebar-icon-button"
+                title="Settings"
+                aria-label="Settings"
+              >
+                ⚙
+              </summary>
+              <div className="settings-menu">
+                <label className="workspace-picker theme-picker">
+                  <span>Theme</span>
+                  <select value={themeId} onChange={(event) => onThemeChange(event.target.value)}>
+                    {Object.values(themes).map((themeOption) => (
+                      <option key={themeOption.id} value={themeOption.id}>
+                        {themeOption.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label className="ambient-toggle" title="Ambient effects">
+                  <input
+                    type="checkbox"
+                    checked={effectsEnabled}
+                    onChange={(event) => onToggleEffects(event.target.checked)}
+                  />
+                  <span>Ambient effects</span>
+                </label>
+              </div>
+            </details>
             <button
               className="sidebar-icon-button sidebar-toggle"
               type="button"
@@ -786,16 +952,21 @@ function Sidebar({
 
       <div className="sidebar-bulk-actions" aria-label="Agent batch controls">
         <button type="button" onClick={onStartEnabled}>Start</button>
-        <button type="button" onClick={onStopEnabled}>End</button>
+        <button type="button" onClick={onStopEnabled}>Stop</button>
       </div>
 
       <section className="panel">
-        <div className="panel-title">Agents</div>
+        <div className="panel-heading">
+          <div className="panel-title">Agents</div>
+          <button className="panel-action" type="button" title="Import agents" onClick={onOpenImport}>
+            Import
+          </button>
+        </div>
         <div className="agent-list">
         {agents.map((agent) => {
           const minimized = agent.enabled && !stoppedOrExited(agent) && minimizedAgents?.has(agent.id);
           return (
-            <button
+            <div
               key={agent.id}
               className={[
                 "agent-row",
@@ -803,7 +974,16 @@ function Sidebar({
                 !agent.enabled ? "agent-row-disabled" : "",
                 minimized ? "agent-row-minimized" : ""
               ].filter(Boolean).join(" ")}
+              role="button"
+              tabIndex={0}
               onClick={() => onSelectAgent(agent.id)}
+              onKeyDown={(event) => {
+                if (event.target !== event.currentTarget) return;
+                if (event.key === "Enter" || event.key === " ") {
+                  event.preventDefault();
+                  onSelectAgent(agent.id);
+                }
+              }}
               title={agent.name}
             >
               <span className={`agent-dot ${statusClass(agent.status)}`} />
@@ -814,10 +994,9 @@ function Sidebar({
                 {!agent.enabled ? (
                   <span className="disabled-label">Off</span>
                 ) : stoppedOrExited(agent) ? (
-                  <span
+                  <button
                     className="icon-button"
-                    role="button"
-                    tabIndex={0}
+                    type="button"
                     title="Start agent"
                     onClick={(event) => {
                       event.stopPropagation();
@@ -825,13 +1004,12 @@ function Sidebar({
                     }}
                   >
                     ▶
-                  </span>
+                  </button>
                 ) : (
                   <>
-                    <span
+                    <button
                       className="window-control window-control-close"
-                      role="button"
-                      tabIndex={0}
+                      type="button"
                       title="Stop agent"
                       aria-label={`Stop ${agent.name}`}
                       onClick={(event) => {
@@ -840,50 +1018,26 @@ function Sidebar({
                       }}
                     >
                       x
-                    </span>
-                    <span
-                      className={[
-                        "window-control",
-                        "window-control-minimize",
-                        minimized ? "window-control-muted" : ""
-                      ].filter(Boolean).join(" ")}
-                      role="button"
-                      tabIndex={0}
-                      title={minimized ? "Panel is minimized" : "Minimize panel"}
-                      aria-label={minimized ? `${agent.name} panel is minimized` : `Minimize ${agent.name} panel`}
+                    </button>
+                    <button
+                      className="window-control window-control-minimize"
+                      type="button"
+                      title={minimized ? "Restore panel" : "Minimize panel"}
+                      aria-label={minimized ? `Restore ${agent.name} panel` : `Minimize ${agent.name} panel`}
                       onClick={(event) => {
                         event.stopPropagation();
-                        if (!minimized) {
-                          onToggleMinimize(agent.id);
-                        }
-                      }}
-                    >
-                      -
-                    </span>
-                    <span
-                      className={[
-                        "window-control",
-                        "window-control-expand",
-                        minimized ? "window-control-emphasis" : ""
-                      ].filter(Boolean).join(" ")}
-                      role="button"
-                      tabIndex={0}
-                      title={minimized ? "Restore panel" : "Focus panel"}
-                      aria-label={minimized ? `Restore ${agent.name} panel` : `Focus ${agent.name} panel`}
-                      onClick={(event) => {
-                        event.stopPropagation();
+                        onToggleMinimize(agent.id);
                         if (minimized) {
-                          onToggleMinimize(agent.id);
+                          onSelectAgent(agent.id);
                         }
-                        onSelectAgent(agent.id);
                       }}
                     >
-                      □
-                    </span>
+                      {minimized ? "+" : "-"}
+                    </button>
                   </>
                 )}
               </span>
-            </button>
+            </div>
           );
         })}
         </div>
@@ -891,31 +1045,42 @@ function Sidebar({
 
       <section className="panel">
         <div className="panel-heading">
-          <div className="panel-title">Files</div>
-          <span>{documentList.length}</span>
+          <div className="panel-title">Docs</div>
+          <span>{hasDocumentFilter ? `${filteredDocumentCount}/${documentList.length}` : documentList.length}</span>
         </div>
         <label className="document-search">
-          <span>Search files</span>
+          <span>Search docs</span>
           <input
             type="search"
             value={documentSearch}
-            placeholder="Search files"
+            placeholder="Search docs"
             onChange={(event) => setDocumentSearch(event.target.value)}
           />
+          <select
+            value={documentFieldFilter}
+            aria-label="Filter docs"
+            onChange={(event) => setDocumentFieldFilter(event.target.value)}
+          >
+            {documentFieldFilters.map((filter) => (
+              <option key={filter.id} value={filter.id}>{filter.label}</option>
+            ))}
+          </select>
         </label>
-        <div className="document-tree" role="tree" aria-label="Project documents">
+        <div className="document-tree" role="tree" aria-label="Project docs">
           {filteredTree ? (
             <DocumentTreeNode
               node={filteredTree}
               expandedFolders={expandedFolders}
-              forceExpanded={Boolean(searchQuery)}
+              forceExpanded={hasDocumentFilter}
+              handoffPath={handoffPath}
+              showPath={hasDocumentFilter}
               onToggleFolder={toggleFolder}
               onOpen={onOpen}
               onInsertDocumentPath={onInsertDocumentPath}
               onToggleDocumentPinned={onToggleDocumentPinned}
             />
           ) : (
-            <div className="document-empty">{searchQuery ? "No matching files" : "No documents"}</div>
+            <div className="document-empty">{hasDocumentFilter ? "No matching docs" : "No docs"}</div>
           )}
         </div>
       </section>
@@ -923,9 +1088,8 @@ function Sidebar({
   );
 }
 
-const Composer = forwardRef(function Composer({ agents, documents, activeAgentId, onRoute }, ref) {
+const Composer = forwardRef(function Composer({ agents, documents, activeAgentId, taskPath, onTaskPathChange, onRoute }, ref) {
   const [value, setValue] = useState("");
-  const [taskPath, setTaskPath] = useState("");
   const [sending, setSending] = useState(false);
   const textareaRef = useRef(null);
   const selectionRef = useRef({ start: 0, end: 0 });
@@ -941,10 +1105,12 @@ const Composer = forwardRef(function Composer({ agents, documents, activeAgentId
     if (mentions.length) return mentions;
     return activeAgentId ? [activeAgentId] : [];
   }, [activeAgentId, enabledAgents, value]);
+  const hasRouteTarget = hasMention || Boolean(activeAgentId);
+  const canSubmit = Boolean(value.trim()) && !sending && hasRouteTarget;
 
   const submit = useCallback(async () => {
     const trimmed = value.trim();
-    if (!trimmed || sending) return;
+    if (!trimmed || sending || !hasRouteTarget) return;
     const explicitTargets = hasMention ? [] : activeAgentId ? [activeAgentId] : [];
     setSending(true);
     try {
@@ -954,7 +1120,7 @@ const Composer = forwardRef(function Composer({ agents, documents, activeAgentId
     } finally {
       setSending(false);
     }
-  }, [activeAgentId, hasMention, onRoute, sending, taskPath, value]);
+  }, [activeAgentId, hasMention, hasRouteTarget, onRoute, sending, taskPath, value]);
 
   const rememberSelection = useCallback(() => {
     const textarea = textareaRef.current;
@@ -1009,22 +1175,16 @@ const Composer = forwardRef(function Composer({ agents, documents, activeAgentId
     });
   }, [value]);
 
-  useEffect(() => {
-    if (taskPath && !documentList.some((document) => document.path === taskPath)) {
-      setTaskPath("");
-    }
-  }, [documentList, taskPath]);
-
   return (
-    <footer className="composer">
-      <div className="composer-targets">
-        Routes to: {mentionPreview.length ? mentionPreview.map((item) => `@${item}`).join(" ") : "none"}
-      </div>
-      <div className="composer-options">
-        <label>
-          Handoff
-          <select value={taskPath} onChange={(event) => setTaskPath(event.target.value)}>
-            <option value="">No document</option>
+    <footer className={["composer", hasMention ? "composer-has-targets" : ""].filter(Boolean).join(" ")}>
+      <div className="composer-topline">
+        <div className="composer-targets">
+          {hasMention ? `Targets: ${mentionPreview.length ? mentionPreview.map((item) => `@${item}`).join(" ") : "none"}` : ""}
+        </div>
+        <label className={taskPath ? "handoff-armed" : ""}>
+          Attach doc
+          <select value={taskPath} onChange={(event) => onTaskPathChange(event.target.value)}>
+            <option value="">No doc</option>
             {documentList.map((document) => (
               <option key={document.path} value={document.path}>
                 {document.pinned ? "★ " : ""}
@@ -1038,7 +1198,7 @@ const Composer = forwardRef(function Composer({ agents, documents, activeAgentId
         <textarea
           ref={textareaRef}
           value={value}
-          placeholder={activeAgentId ? `@${activeAgentId} Ask an agent...` : "@all Ask the team..."}
+          placeholder={activeAgentId ? `@${activeAgentId} Ask an agent...` : "Mention an agent to send..."}
           onChange={(event) => {
             setValue(event.target.value);
             selectionRef.current = {
@@ -1081,7 +1241,7 @@ const Composer = forwardRef(function Composer({ agents, documents, activeAgentId
           className="send-button"
           onClick={submit}
           title="Enter to send, Ctrl/Cmd+Enter for a new line"
-          disabled={sending}
+          disabled={!canSubmit}
         >
           {sending ? "Sending..." : "Send"}
         </button>
@@ -1089,6 +1249,227 @@ const Composer = forwardRef(function Composer({ agents, documents, activeAgentId
     </footer>
   );
 });
+
+const IMPORT_JSON_PLACEHOLDER = `{
+  "agents": [
+    {
+      "id": "my-agent",
+      "name": "My Agent",
+      "command": "my-agent-cli",
+      "args": [],
+      "cwd": ".",
+      "enabled": true
+    }
+  ]
+}`;
+
+function AgentImportModal({ onClose, onImported, onNotice }) {
+  const [source, setSource] = useState("preset");
+  const [presets, setPresets] = useState([]);
+  const [presetId, setPresetId] = useState("");
+  const [jsonText, setJsonText] = useState("");
+  const [review, setReview] = useState(null);
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    let mounted = true;
+    Promise.resolve()
+      .then(() => api.listAgentPresets?.() || [])
+      .then((list) => {
+        if (!mounted) return;
+        setPresets(Array.isArray(list) ? list : []);
+        setPresetId((current) => current || list?.[0]?.id || "");
+      })
+      .catch(() => {});
+    return () => {
+      mounted = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    const onKeyDown = (event) => {
+      if (event.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [onClose]);
+
+  const buildPayload = useCallback(() => {
+    if (source === "preset") {
+      const preset = presets.find((item) => item.id === presetId);
+      if (!preset) throw new Error("Choose a preset first.");
+      return { agents: [preset] };
+    }
+    const text = jsonText.trim();
+    if (!text) throw new Error("Paste an agent config JSON first.");
+    let parsed;
+    try {
+      parsed = JSON.parse(text);
+    } catch (parseError) {
+      throw new Error(`Invalid JSON: ${parseError.message}`);
+    }
+    return parsed;
+  }, [jsonText, presetId, presets, source]);
+
+  const reviewDraft = useCallback(async () => {
+    setBusy(true);
+    setError("");
+    try {
+      const payload = buildPayload();
+      const result = await api.importAgents(payload, { dryRun: true });
+      setReview({ payload, ...result });
+    } catch (reviewError) {
+      setReview(null);
+      setError(reviewError.message);
+    } finally {
+      setBusy(false);
+    }
+  }, [buildPayload]);
+
+  const confirmImport = useCallback(async () => {
+    if (!review?.ok || !review.payload) return;
+    setBusy(true);
+    setError("");
+    try {
+      const result = await api.importAgents(review.payload, {});
+      onNotice?.(
+        result?.imported?.length
+          ? `Imported ${result.imported.map((id) => `@${id}`).join(" ")}. Start them from the sidebar when ready.`
+          : ""
+      );
+      onImported();
+    } catch (importError) {
+      setError(importError.message);
+    } finally {
+      setBusy(false);
+    }
+  }, [onImported, onNotice, review]);
+
+  const invalidateReview = () => {
+    setReview(null);
+    setError("");
+  };
+
+  return (
+    <div
+      className="modal-overlay"
+      onClick={(event) => {
+        if (event.target === event.currentTarget) onClose();
+      }}
+    >
+      <div className="modal" role="dialog" aria-modal="true" aria-label="Import agents">
+        <header className="modal-header">
+          <div className="modal-title">Import agents</div>
+          <button className="sidebar-icon-button" type="button" aria-label="Close" onClick={onClose}>
+            x
+          </button>
+        </header>
+        <div className="modal-body">
+          <div className="import-tabs" role="tablist" aria-label="Import source">
+            {[
+              { id: "preset", label: "Preset" },
+              { id: "json", label: "Local JSON" }
+            ].map((tab) => (
+              <button
+                key={tab.id}
+                type="button"
+                role="tab"
+                aria-selected={source === tab.id}
+                className={source === tab.id ? "import-tab-active" : ""}
+                onClick={() => {
+                  setSource(tab.id);
+                  invalidateReview();
+                }}
+              >
+                {tab.label}
+              </button>
+            ))}
+          </div>
+
+          {source === "preset" ? (
+            <label className="import-field">
+              <span>Preset</span>
+              <select
+                value={presetId}
+                onChange={(event) => {
+                  setPresetId(event.target.value);
+                  invalidateReview();
+                }}
+              >
+                {presets.map((preset) => (
+                  <option key={preset.id} value={preset.id}>
+                    {preset.name} ({preset.command})
+                  </option>
+                ))}
+              </select>
+            </label>
+          ) : (
+            <label className="import-field">
+              <span>Agent config JSON</span>
+              <textarea
+                value={jsonText}
+                placeholder={IMPORT_JSON_PLACEHOLDER}
+                spellCheck={false}
+                onChange={(event) => {
+                  setJsonText(event.target.value);
+                  invalidateReview();
+                }}
+              />
+            </label>
+          )}
+
+          <div className="import-hint">
+            Imported agents are saved as drafts in your agent config and never start automatically. Unknown
+            fields are kept as-is and ignored by the app.
+          </div>
+
+          {review?.agents?.length ? (
+            <div className="import-review">
+              {review.agents.map((agent, index) => (
+                <div className="import-review-item" key={`${agent.id || "agent"}:${index}`}>
+                  <h4>
+                    {agent.name || agent.id || "(missing id)"}
+                    {agent.enabled === false ? " · disabled" : ""}
+                  </h4>
+                  <div className="import-review-line">
+                    Command: <code>{[agent.command, ...(agent.args || [])].filter(Boolean).join(" ") || "—"}</code>
+                  </div>
+                  <div className="import-review-line">CWD: <code>{agent.cwd || "."}</code></div>
+                  {(agent.errors || []).map((message, errorIndex) => (
+                    <div className="import-error" key={`error:${errorIndex}`}>✗ {message}</div>
+                  ))}
+                  {(agent.warnings || []).map((message, warningIndex) => (
+                    <div className="import-warning" key={`warning:${warningIndex}`}>⚠ {message}</div>
+                  ))}
+                </div>
+              ))}
+            </div>
+          ) : null}
+
+          {error ? <div className="modal-error">{error}</div> : null}
+        </div>
+        <footer className="modal-footer">
+          <button className="modal-button" type="button" onClick={onClose} disabled={busy}>
+            Cancel
+          </button>
+          <button className="modal-button" type="button" onClick={reviewDraft} disabled={busy}>
+            Review
+          </button>
+          <button
+            className="modal-button modal-button-primary"
+            type="button"
+            onClick={confirmImport}
+            disabled={busy || !review?.ok}
+            title={review?.ok ? "Save to agent config" : "Review the draft first"}
+          >
+            Import
+          </button>
+        </footer>
+      </div>
+    </div>
+  );
+}
 
 function App() {
   const [workspace, setWorkspace] = useState(null);
@@ -1108,6 +1489,48 @@ function App() {
   const minimizedReadyRootRef = useRef(null);
   const minimizedAgentsRef = useRef(minimizedAgents);
   const workspaceRoot = workspace?.root || "";
+  const [themeId, setThemeId] = useState(() => {
+    try {
+      return window.localStorage?.getItem("aiTeams.theme") || DEFAULT_THEME_ID;
+    } catch {
+      return DEFAULT_THEME_ID;
+    }
+  });
+  const theme = themePresets[themeId] || themePresets[DEFAULT_THEME_ID];
+  const themeCssVars = useMemo(() => themeToCssVars(theme), [theme]);
+  const [effectsEnabled, setEffectsEnabled] = useState(() => {
+    try {
+      return window.localStorage?.getItem("aiTeams.ambientEffects") !== "false";
+    } catch {
+      return true;
+    }
+  });
+  const [taskPath, setTaskPath] = useState("");
+  const [importOpen, setImportOpen] = useState(false);
+
+  useEffect(() => {
+    try {
+      window.localStorage?.setItem("aiTeams.theme", theme.id);
+    } catch {
+      // Ignore storage failures in restricted browser contexts.
+    }
+  }, [theme.id]);
+
+  useEffect(() => {
+    try {
+      window.localStorage?.setItem("aiTeams.ambientEffects", effectsEnabled ? "true" : "false");
+    } catch {
+      // Ignore storage failures in restricted browser contexts.
+    }
+  }, [effectsEnabled]);
+
+  // The armed handoff document only makes sense while it exists in the tree.
+  useEffect(() => {
+    const documentList = documents?.documents || [];
+    if (taskPath && !documentList.some((document) => document.path === taskPath)) {
+      setTaskPath("");
+    }
+  }, [documents, taskPath]);
 
   useEffect(() => {
     minimizedAgentsRef.current = minimizedAgents;
@@ -1342,7 +1765,15 @@ function App() {
   ].filter(Boolean).join(" ");
 
   return (
-    <div className={`app-shell ${sidebarCollapsed ? "app-shell-sidebar-collapsed" : ""}`}>
+    <div
+      className={[
+        "app-shell",
+        sidebarCollapsed ? "app-shell-sidebar-collapsed" : "",
+        effectsEnabled ? "effects-on" : ""
+      ].filter(Boolean).join(" ")}
+      data-theme={theme.id}
+      style={{ ...themeCssVars, colorScheme: theme.colorScheme }}
+    >
       <Sidebar
         workspace={workspace}
         agents={agents}
@@ -1350,6 +1781,13 @@ function App() {
         activeAgentId={activeAgentId}
         minimizedAgents={minimizedAgents}
         collapsed={sidebarCollapsed}
+        themeId={theme.id}
+        themes={themePresets}
+        effectsEnabled={effectsEnabled}
+        handoffPath={taskPath}
+        onThemeChange={setThemeId}
+        onToggleEffects={setEffectsEnabled}
+        onOpenImport={() => setImportOpen(true)}
         onToggleCollapsed={() => setSidebarCollapsed((current) => !current)}
         onSelectAgent={(agentId) => {
           const agent = agents.find((item) => item.id === agentId);
@@ -1388,6 +1826,7 @@ function App() {
               agent={agent}
               active={activeAgentId === agent.id}
               hidden={minimizedAgents.has(agent.id)}
+              terminalTheme={theme.terminal}
               onFocus={() => setActiveAgentId(agent.id)}
               onNotice={setNotice}
             />
@@ -1399,16 +1838,37 @@ function App() {
                 : enabledAgents.length
                   ? "Start an agent from the sidebar to open its terminal."
                   : (
-                    <>
-                      No agents are configured in AI Teams.
-                    </>
+                    <div className="empty-state-actions">
+                      <div>No agents are configured in AI Teams.</div>
+                      <button className="empty-import" type="button" onClick={() => setImportOpen(true)}>
+                        Import agent
+                      </button>
+                    </div>
                   )}
             </div>
           ) : null}
         </section>
 
-        <Composer ref={composerRef} agents={runningAgents} documents={documents} activeAgentId={activeAgentId} onRoute={route} />
+        <Composer
+          ref={composerRef}
+          agents={runningAgents}
+          documents={documents}
+          activeAgentId={activeAgentId}
+          taskPath={taskPath}
+          onTaskPathChange={setTaskPath}
+          onRoute={route}
+        />
       </main>
+      {importOpen ? (
+        <AgentImportModal
+          onClose={() => setImportOpen(false)}
+          onNotice={setNotice}
+          onImported={() => {
+            setImportOpen(false);
+            refreshAgents().catch((error) => setNotice(error.message));
+          }}
+        />
+      ) : null}
     </div>
   );
 }

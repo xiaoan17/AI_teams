@@ -1,8 +1,38 @@
 :root {
   color-scheme: dark;
   font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  background: #0e1114;
-  color: #e8edf2;
+  /* Default tokens match the Workbench Dark preset so the pre-React paint is
+     seamless; App overrides these inline on .app-shell per selected theme. */
+  --app-bg: #0e1114;
+  --sidebar-bg: #14191e;
+  --panel-bg: #181f25;
+  --surface-bg: #10151a;
+  --header-bg: #161c22;
+  --control-bg: #1b232a;
+  --control-strong-bg: #273542;
+  --control-strong-border: #46596b;
+  --input-bg: #10161b;
+  --text: #e8edf2;
+  --text-soft: #cbd5df;
+  --muted: #8995a0;
+  --border: #252c33;
+  --border-strong: #33404b;
+  --accent: #f2c14e;
+  --focus: #5f83b6;
+  --focus-ring: rgba(111, 147, 200, 0.28);
+  --success: #52b788;
+  --warning: #f2c14e;
+  --danger: #ef6f6c;
+  --stopped: #6e7a85;
+  --hover-bg: #1b232a;
+  --active-row-bg: #1d2630;
+  --pill-bg: #222a31;
+  --notice-bg: #1b2935;
+  --notice-text: #d9e7f6;
+  --terminal-bg: #0d1114;
+  --terminal-fg: #d9e0e8;
+  background: var(--app-bg);
+  color: var(--text);
 }
 
 * {
@@ -21,7 +51,7 @@ body {
   min-width: 1040px;
   min-height: 680px;
   overflow: hidden;
-  background: #0e1114;
+  background: var(--app-bg);
 }
 
 button,
@@ -39,7 +69,8 @@ button {
   grid-template-columns: 268px minmax(0, 1fr);
   height: 100vh;
   overflow: hidden;
-  background: #0e1114;
+  background: var(--app-bg);
+  color: var(--text);
   transition: grid-template-columns 160ms ease;
 }
 
@@ -49,8 +80,8 @@ button {
 
 .sidebar {
   min-width: 0;
-  border-right: 1px solid #252c33;
-  background: #14191e;
+  border-right: 1px solid var(--border);
+  background: var(--sidebar-bg);
   padding: 14px;
   overflow: hidden;
 }
@@ -79,10 +110,10 @@ button {
   place-items: center;
   width: 34px;
   height: 34px;
-  border: 1px solid #35414c;
+  border: 1px solid var(--border-strong);
   border-radius: 8px;
-  background: #202830;
-  color: #f2c14e;
+  background: var(--control-bg);
+  color: var(--accent);
   font-size: 14px;
   font-weight: 800;
 }
@@ -100,9 +131,36 @@ button {
 
 .brand-actions {
   display: grid;
-  grid-template-columns: 28px;
+  grid-template-columns: repeat(2, 28px);
   gap: 6px;
   justify-content: end;
+}
+
+.sidebar-settings {
+  position: relative;
+}
+
+.sidebar-settings > summary {
+  list-style: none;
+}
+
+.sidebar-settings > summary::-webkit-details-marker {
+  display: none;
+}
+
+.settings-menu {
+  position: absolute;
+  top: 34px;
+  right: 0;
+  z-index: 20;
+  display: grid;
+  gap: 9px;
+  width: 218px;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  background: var(--sidebar-bg);
+  padding: 10px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.32);
 }
 
 .workspace-control {
@@ -112,7 +170,7 @@ button {
 }
 
 .workspace-label {
-  color: #8995a0;
+  color: var(--muted);
   font-size: 11px;
   font-weight: 800;
   line-height: 1;
@@ -125,10 +183,10 @@ button {
   width: 100%;
   min-width: 0;
   min-height: 38px;
-  border: 1px solid #33404b;
+  border: 1px solid var(--border-strong);
   border-radius: 8px;
-  background: #1b232a;
-  color: #e8edf2;
+  background: var(--control-bg);
+  color: var(--text);
   cursor: pointer;
   padding: 7px 10px;
   text-align: left;
@@ -136,8 +194,8 @@ button {
 
 .workspace-current:focus-visible,
 .workspace-picker select:focus-visible {
-  border-color: #6f93c8;
-  outline: 2px solid rgba(111, 147, 200, 0.28);
+  border-color: var(--focus);
+  outline: 2px solid var(--focus-ring);
   outline-offset: 2px;
 }
 
@@ -158,7 +216,7 @@ button {
   grid-template-columns: 48px minmax(0, 1fr);
   align-items: center;
   gap: 6px;
-  color: #8995a0;
+  color: var(--muted);
   font-size: 11px;
   font-weight: 700;
   text-transform: uppercase;
@@ -168,10 +226,10 @@ button {
   min-width: 0;
   width: 100%;
   height: 26px;
-  border: 1px solid #263039;
+  border: 1px solid var(--border);
   border-radius: 7px;
-  background: #10161b;
-  color: #e8edf2;
+  background: var(--input-bg);
+  color: var(--text);
   outline: none;
   padding: 0 7px;
   font-size: 12px;
@@ -180,13 +238,29 @@ button {
 }
 
 .workspace-picker select:disabled {
-  border-color: #263039;
-  color: #65717b;
+  border-color: var(--border);
+  color: var(--muted);
   cursor: default;
 }
 
+.ambient-toggle {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+
+.ambient-toggle input {
+  margin: 0;
+  accent-color: var(--focus);
+}
+
 .document-open small {
-  color: #8995a0;
+  color: var(--muted);
 }
 
 .sidebar-icon-button {
@@ -194,10 +268,10 @@ button {
   place-items: center;
   width: 28px;
   height: 28px;
-  border: 1px solid #33404b;
+  border: 1px solid var(--border-strong);
   border-radius: 7px;
-  background: #1b232a;
-  color: #cbd5df;
+  background: var(--control-bg);
+  color: var(--text-soft);
   cursor: pointer;
   font-size: 14px;
   font-weight: 800;
@@ -214,10 +288,14 @@ button {
 .workspace-current:hover,
 .workspace-picker select:hover,
 .document-search input:hover,
-.composer-options select:hover,
+.document-search select:hover,
+.composer-topline select:hover,
 .sidebar-bulk-actions button:hover,
+.panel-action:hover,
+.modal-button:hover,
+.empty-import:hover,
 .send-button:hover {
-  border-color: #5f83b6;
+  border-color: var(--focus);
 }
 
 .sidebar-bulk-actions {
@@ -228,11 +306,12 @@ button {
 }
 
 .sidebar-bulk-actions button,
-.send-button {
-  border: 1px solid #46596b;
+.send-button,
+.empty-import {
+  border: 1px solid var(--control-strong-border);
   border-radius: 8px;
-  background: #273542;
-  color: #e8edf2;
+  background: var(--control-strong-bg);
+  color: var(--text);
   cursor: pointer;
   font-weight: 700;
 }
@@ -256,14 +335,14 @@ button {
 }
 
 .panel-heading span {
-  color: #75818c;
+  color: var(--muted);
   font-size: 11px;
   font-weight: 750;
 }
 
 .panel-title {
   margin-bottom: 8px;
-  color: #aeb8c2;
+  color: var(--text-soft);
   font-size: 11px;
   font-weight: 800;
   text-transform: uppercase;
@@ -271,6 +350,18 @@ button {
 
 .panel-heading .panel-title {
   margin-bottom: 0;
+}
+
+.panel-action {
+  height: 22px;
+  padding: 0 8px;
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  background: var(--control-bg);
+  color: var(--text-soft);
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 750;
 }
 
 .agent-list {
@@ -281,10 +372,11 @@ button {
 .agent-row {
   display: grid;
   width: 100%;
-  border: 1px solid #263039;
+  border: 1px solid var(--border);
   border-radius: 8px;
-  background: #181f25;
-  color: #e8edf2;
+  background: var(--panel-bg);
+  color: var(--text);
+  cursor: pointer;
   text-align: left;
 }
 
@@ -300,11 +392,28 @@ button {
   display: flex;
   align-items: center;
   gap: 7px;
+  opacity: 0;
+  pointer-events: none;
+  visibility: hidden;
+  transition: opacity 120ms ease;
+}
+
+.agent-row:hover .agent-actions,
+.agent-row:focus-within .agent-actions {
+  opacity: 1;
+  pointer-events: auto;
+  visibility: visible;
 }
 
 .agent-row-active {
-  border-color: #5f83b6;
-  background: #1d2630;
+  border-color: var(--focus);
+  background: var(--active-row-bg);
+}
+
+.agent-row:focus-visible {
+  border-color: var(--focus);
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
 }
 
 .agent-row-disabled {
@@ -312,7 +421,7 @@ button {
 }
 
 .agent-row-minimized .agent-main span {
-  color: #8d9aa6;
+  color: var(--muted);
 }
 
 /* Status dots keep their real color while minimized; pulse waiting_input so
@@ -323,10 +432,10 @@ button {
 
 @keyframes agent-dot-pulse {
   0%, 100% {
-    box-shadow: 0 0 0 0 rgba(242, 193, 78, 0.55);
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--warning) 55%, transparent);
   }
   50% {
-    box-shadow: 0 0 0 4px rgba(242, 193, 78, 0);
+    box-shadow: 0 0 0 4px transparent;
   }
 }
 
@@ -362,60 +471,37 @@ button {
   place-items: center;
   width: 24px;
   height: 24px;
-  border: 1px solid #3a4650;
+  border: 1px solid var(--border-strong);
   border-radius: 6px;
-  background: #242d35;
-  color: #e8edf2;
+  background: var(--control-bg);
+  color: var(--text);
   cursor: pointer;
 }
 
 .window-control {
   display: grid;
   place-items: center;
-  width: 18px;
-  height: 18px;
-  border: 1px solid rgba(255, 255, 255, 0.16);
-  border-radius: 50%;
-  color: rgba(15, 19, 22, 0.78);
-  font-size: 13px;
+  width: 24px;
+  height: 24px;
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  background: var(--control-bg);
+  color: var(--text-soft);
+  font-size: 12px;
   font-weight: 800;
   line-height: 1;
   cursor: pointer;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.26), 0 1px 2px rgba(0, 0, 0, 0.28);
-  transition: transform 120ms ease, filter 120ms ease, box-shadow 120ms ease;
+  transition: border-color 120ms ease, color 120ms ease, background 120ms ease;
 }
 
 .window-control:hover {
-  filter: brightness(1.08) saturate(1.08);
-  transform: translateY(-1px);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.32), 0 3px 7px rgba(0, 0, 0, 0.3);
+  border-color: var(--focus);
+  color: var(--text);
 }
 
-.window-control-close {
-  background: #ff5f57;
-}
-
-.window-control-minimize {
-  background: #ffbd2e;
-}
-
-.window-control-expand {
-  background: #28c840;
-}
-
-.window-control-muted {
-  opacity: 0.46;
-  cursor: default;
-}
-
-.window-control-muted:hover {
-  filter: none;
-  transform: none;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.26), 0 1px 2px rgba(0, 0, 0, 0.28);
-}
-
-.window-control-emphasis {
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.28), 0 0 0 3px rgba(40, 200, 64, 0.16);
+.window-control-close:hover {
+  border-color: var(--danger);
+  color: var(--danger);
 }
 
 .disabled-label {
@@ -423,15 +509,16 @@ button {
   place-items: center;
   width: 24px;
   height: 20px;
-  color: #8d9aa6;
+  color: var(--muted);
   font-size: 11px;
 }
 
 .document-search {
   display: grid;
+  grid-template-columns: minmax(0, 1fr) 76px;
   gap: 6px;
   margin-bottom: 8px;
-  color: #8995a0;
+  color: var(--muted);
   font-size: 11px;
   font-weight: 700;
 }
@@ -446,12 +533,13 @@ button {
 }
 
 .document-search input,
-.composer-options select {
+.document-search select,
+.composer-topline select {
   min-width: 0;
-  border: 1px solid #263039;
+  border: 1px solid var(--border);
   border-radius: 7px;
-  background: #10161b;
-  color: #e8edf2;
+  background: var(--input-bg);
+  color: var(--text);
   outline: none;
 }
 
@@ -462,12 +550,21 @@ button {
   font-size: 12px;
 }
 
-.document-search input:focus {
-  border-color: #5f83b6;
+.document-search select {
+  width: 100%;
+  height: 30px;
+  padding: 0 7px;
+  font-size: 12px;
+}
+
+.document-search input:focus,
+.document-search select:focus,
+.composer-topline select:focus {
+  border-color: var(--focus);
 }
 
 .document-search input::placeholder {
-  color: #687580;
+  color: var(--muted);
 }
 
 .document-tree {
@@ -498,7 +595,7 @@ button {
   border: 1px solid transparent;
   border-radius: 6px;
   background: transparent;
-  color: #e8edf2;
+  color: var(--text);
 }
 
 .folder-row {
@@ -513,13 +610,13 @@ button {
 
 .folder-row:hover,
 .document-row:hover {
-  background: #1b232a;
+  background: var(--hover-bg);
 }
 
 .folder-chevron,
 .folder-icon,
 .folder-count {
-  color: #83909b;
+  color: var(--muted);
 }
 
 .folder-chevron,
@@ -551,8 +648,8 @@ button {
 }
 
 .document-row-pinned {
-  border-color: #544a2e;
-  background: #1b201b;
+  border-color: color-mix(in srgb, var(--accent) 42%, var(--border));
+  background: color-mix(in srgb, var(--accent) 12%, var(--panel-bg));
 }
 
 .document-open,
@@ -580,32 +677,59 @@ button {
   font-size: 10.5px;
 }
 
+.document-status {
+  color: var(--focus);
+  font-weight: 800;
+}
+
+.document-status-finish {
+  color: var(--success);
+}
+
+.document-status-todo {
+  color: var(--warning);
+}
+
 .document-insert,
 .document-pin {
   display: grid;
   place-items: center;
   width: 24px;
   height: 24px;
-  border: 1px solid #34404a;
+  border: 1px solid var(--border-strong);
   border-radius: 6px;
   font-size: 13px;
   line-height: 1;
+  opacity: 0;
+  pointer-events: none;
+  visibility: hidden;
+  transition: opacity 120ms ease, border-color 120ms ease;
+}
+
+.document-row:hover .document-insert,
+.document-row:focus-within .document-insert,
+.document-row:hover .document-pin,
+.document-row:focus-within .document-pin,
+.document-row-pinned .document-pin {
+  opacity: 1;
+  pointer-events: auto;
+  visibility: visible;
 }
 
 .document-insert {
-  color: #a9c7ea;
+  color: var(--focus);
   font-weight: 800;
 }
 
 .document-pin {
-  color: #f2c14e;
+  color: var(--accent);
 }
 
 .document-empty {
-  border: 1px dashed #34404a;
+  border: 1px dashed var(--border-strong);
   border-radius: 8px;
   padding: 10px;
-  color: #8995a0;
+  color: var(--muted);
   font-size: 12px;
   text-align: center;
 }
@@ -671,7 +795,7 @@ button {
   grid-template-rows: minmax(0, 1fr) 116px;
   min-width: 0;
   min-height: 0;
-  background: #0e1114;
+  background: var(--app-bg);
 }
 
 .workspace-has-notice {
@@ -680,11 +804,11 @@ button {
 
 .notice {
   margin: 8px 16px 0;
-  border: 1px solid #5f83b6;
+  border: 1px solid var(--focus);
   border-radius: 8px;
-  background: #1b2935;
+  background: var(--notice-bg);
   padding: 8px 10px;
-  color: #d9e7f6;
+  color: var(--notice-text);
   font-size: 12px;
 }
 
@@ -719,18 +843,20 @@ button {
 }
 
 .terminal-card {
+  --focus-glow: 0 0 0 0 transparent;
+  --breath-color: var(--success);
   display: grid;
   grid-template-rows: 42px minmax(0, 1fr);
   min-width: 0;
   min-height: 0;
-  border: 1px solid #29323a;
+  border: 1px solid var(--border);
   border-radius: 8px;
-  background: #10151a;
+  background: var(--surface-bg);
   overflow: hidden;
 }
 
 .terminal-card-active {
-  border-color: #5f83b6;
+  border-color: var(--focus);
 }
 
 /* Minimized panels stay mounted (xterm buffer + subscriptions intact) and are
@@ -746,8 +872,8 @@ button {
   gap: 12px;
   min-width: 0;
   padding: 8px 10px;
-  border-bottom: 1px solid #252e36;
-  background: #161c22;
+  border-bottom: 1px solid var(--border);
+  background: var(--header-bg);
 }
 
 .terminal-header > div:first-child {
@@ -762,17 +888,6 @@ button {
   white-space: nowrap;
 }
 
-.terminal-meta {
-  overflow: hidden;
-  margin-top: 2px;
-  color: #7f8b96;
-  font-size: 10.5px;
-  font-weight: 700;
-  line-height: 1;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 .status-pill {
   display: inline-flex;
   flex: 0 0 auto;
@@ -781,30 +896,30 @@ button {
   height: 24px;
   padding: 0 9px;
   border-radius: 999px;
-  background: #222a31;
-  color: #cbd5df;
+  background: var(--pill-bg);
+  color: var(--text-soft);
   font-size: 12px;
   font-weight: 650;
 }
 
 .status-running .status-dot,
 .agent-dot.status-running {
-  background: #52b788;
+  background: var(--success);
 }
 
 .status-waiting .status-dot,
 .agent-dot.status-waiting {
-  background: #f2c14e;
+  background: var(--warning);
 }
 
 .status-error .status-dot,
 .agent-dot.status-error {
-  background: #ef6f6c;
+  background: var(--danger);
 }
 
 .status-stopped .status-dot,
 .agent-dot.status-stopped {
-  background: #6e7a85;
+  background: var(--stopped);
 }
 
 .terminal-surface {
@@ -812,7 +927,7 @@ button {
   min-height: 0;
   height: 100%;
   padding: 8px;
-  background: #0d1114;
+  background: var(--terminal-bg);
   overflow: hidden;
 }
 
@@ -825,7 +940,7 @@ button {
 }
 
 .terminal-surface .xterm-viewport {
-  background: #0d1114 !important;
+  background: var(--terminal-bg) !important;
 }
 
 .terminal-surface .xterm-screen {
@@ -833,44 +948,112 @@ button {
   height: 100%;
 }
 
+/* Ambient effects (光效). Everything is scoped under .effects-on so the toggle
+   removes the rules at the selector level — no JS cleanup, zero idle cost.
+   Restraint rules: max spread 18px, max alpha 0.18, cycle >= 2.8s, effects on
+   borders/shadows only — never on text or the xterm canvas. */
+.app-shell.effects-on .terminal-card-active {
+  border-color: var(--focus);
+}
+
+.app-shell.effects-on .terminal-card-working {
+  animation: ambient-breath 3s ease-in-out infinite;
+}
+
+.app-shell.effects-on .terminal-card-working.breath-waiting {
+  --breath-color: var(--warning);
+}
+
+@keyframes ambient-breath {
+  0%, 100% {
+    box-shadow:
+      var(--focus-glow),
+      0 0 0 1px color-mix(in srgb, var(--breath-color) 6%, transparent),
+      0 0 14px color-mix(in srgb, var(--breath-color) 6%, transparent);
+  }
+  50% {
+    box-shadow:
+      var(--focus-glow),
+      0 0 0 1px color-mix(in srgb, var(--breath-color) 18%, transparent),
+      0 0 18px color-mix(in srgb, var(--breath-color) 18%, transparent);
+  }
+}
+
+.app-shell.effects-on .document-row-handoff {
+  border-color: color-mix(in srgb, var(--warning) 55%, transparent);
+  animation: handoff-breath 3s ease-in-out infinite;
+}
+
+@keyframes handoff-breath {
+  0%, 100% {
+    box-shadow: inset 2px 0 0 color-mix(in srgb, var(--warning) 45%, transparent);
+  }
+  50% {
+    box-shadow: inset 2px 0 0 color-mix(in srgb, var(--warning) 80%, transparent);
+  }
+}
+
+.app-shell.effects-on .handoff-armed select {
+  border-color: color-mix(in srgb, var(--warning) 60%, var(--border));
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .app-shell.effects-on .terminal-card-working {
+    animation: none;
+    box-shadow:
+      var(--focus-glow),
+      0 0 0 1px color-mix(in srgb, var(--breath-color) 12%, transparent),
+      0 0 16px color-mix(in srgb, var(--breath-color) 12%, transparent);
+  }
+
+  .app-shell.effects-on .document-row-handoff {
+    animation: none;
+    box-shadow: inset 2px 0 0 color-mix(in srgb, var(--warning) 60%, transparent);
+  }
+
+  .agent-row-minimized .agent-dot.status-waiting {
+    animation: none;
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--warning) 35%, transparent);
+  }
+}
+
 .composer {
   display: grid;
-  grid-template-rows: 22px minmax(0, 1fr);
+  grid-template-rows: 28px minmax(0, 1fr);
   gap: 8px;
   min-width: 0;
-  border-top: 1px solid #252c33;
-  background: #14191e;
+  border-top: 1px solid var(--border);
+  background: var(--sidebar-bg);
   padding: 10px 16px 12px;
+}
+
+.composer-topline {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
 }
 
 .composer-targets {
   overflow: hidden;
-  color: #a8b4bf;
+  color: var(--text-soft);
   font-size: 12px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.composer-options {
-  display: flex;
-  justify-content: flex-end;
-  min-width: 0;
-  margin-top: -30px;
-  pointer-events: none;
-}
-
-.composer-options label {
+.composer-topline label {
   display: inline-flex;
   align-items: center;
   gap: 7px;
   min-width: 0;
   max-width: min(420px, 46vw);
-  color: #8995a0;
+  color: var(--muted);
   font-size: 12px;
-  pointer-events: auto;
 }
 
-.composer-options select {
+.composer-topline select {
   width: min(300px, 32vw);
   height: 26px;
   padding: 0 7px;
@@ -890,32 +1073,239 @@ button {
   min-height: 0;
   max-height: 58px;
   resize: none;
-  border: 1px solid #34404a;
+  border: 1px solid var(--border-strong);
   border-radius: 8px;
-  background: #0e1317;
-  color: #e8edf2;
+  background: var(--input-bg);
+  color: var(--text);
   padding: 10px 11px;
   outline: none;
 }
 
 .composer textarea:focus {
-  border-color: #5f83b6;
+  border-color: var(--focus);
 }
 
 .send-button {
   height: 58px;
 }
 
+.send-button:disabled {
+  opacity: 0.52;
+  cursor: default;
+}
+
 .empty-state {
   display: grid;
   place-items: center;
   min-height: 240px;
-  border: 1px dashed #3a4650;
+  border: 1px dashed var(--border-strong);
   border-radius: 8px;
-  color: #aab5bf;
+  color: var(--muted);
   text-align: center;
 }
 
+.empty-state-actions {
+  display: grid;
+  gap: 12px;
+  justify-items: center;
+}
+
+.empty-import {
+  height: 30px;
+  padding: 0 14px;
+  font-size: 12px;
+}
+
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: grid;
+  place-items: center;
+  background: rgba(0, 0, 0, 0.45);
+}
+
+.modal {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  width: min(560px, calc(100vw - 48px));
+  max-height: min(640px, calc(100vh - 48px));
+  border: 1px solid var(--border-strong);
+  border-radius: 10px;
+  background: var(--sidebar-bg);
+  color: var(--text);
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.4);
+}
+
+.modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--border);
+}
+
+.modal-title {
+  font-size: 14px;
+  font-weight: 800;
+}
+
+.modal-body {
+  display: grid;
+  gap: 10px;
+  align-content: start;
+  padding: 12px 14px;
+  overflow: auto;
+}
+
+.modal-footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 12px 14px;
+  border-top: 1px solid var(--border);
+}
+
+.modal-button {
+  height: 30px;
+  padding: 0 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: 7px;
+  background: var(--control-bg);
+  color: var(--text);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.modal-button-primary {
+  border-color: var(--control-strong-border);
+  background: var(--control-strong-bg);
+}
+
+.modal-button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.import-tabs {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.import-tabs button {
+  height: 28px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--input-bg);
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 750;
+}
+
+.import-tabs .import-tab-active {
+  border-color: var(--focus);
+  background: var(--active-row-bg);
+  color: var(--text);
+}
+
+.import-field {
+  display: grid;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.import-field select,
+.import-field textarea {
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--input-bg);
+  color: var(--text);
+  outline: none;
+  padding: 6px 8px;
+  font-size: 12px;
+  font-weight: 500;
+  text-transform: none;
+}
+
+.import-field select {
+  height: 30px;
+  padding: 0 8px;
+}
+
+.import-field select:focus-visible,
+.import-field textarea:focus {
+  border-color: var(--focus);
+}
+
+.import-field textarea {
+  min-height: 150px;
+  resize: vertical;
+  font-family: SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 11.5px;
+  line-height: 1.45;
+}
+
+.import-hint {
+  color: var(--muted);
+  font-size: 11.5px;
+  line-height: 1.5;
+}
+
+.import-review {
+  display: grid;
+  gap: 8px;
+}
+
+.import-review-item {
+  display: grid;
+  gap: 4px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel-bg);
+  padding: 8px 10px;
+}
+
+.import-review-item h4 {
+  margin: 0;
+  font-size: 12.5px;
+}
+
+.import-review-line {
+  color: var(--muted);
+  font-size: 11.5px;
+  overflow-wrap: anywhere;
+}
+
+.import-review-line code {
+  font-size: 11px;
+}
+
+.import-warning {
+  color: var(--warning);
+  font-size: 11.5px;
+}
+
+.import-error,
+.modal-error {
+  color: var(--danger);
+  font-size: 11.5px;
+}
+
+.modal-error {
+  border: 1px solid var(--danger);
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-size: 12px;
+}
+
 code {
-  color: #f2c14e;
+  color: var(--accent);
 }

@@ -1,11 +1,17 @@
 const { app, BrowserWindow, dialog, ipcMain, shell } = require("electron");
 const { execFileSync } = require("child_process");
 const fs = require("fs");
+const os = require("os");
 const path = require("path");
 const { createTmuxViewManager, runTmuxAsync } = require("./tmux-view.cjs");
 
 const APP_ROOT = path.resolve(__dirname, "..", "..");
 app.setName("AI Teams");
+if (!process.env.AITEAMS_USER_DATA_PATH) {
+  app.setPath("userData", path.join(app.getPath("appData"), "ai-teams"));
+} else {
+  app.setPath("userData", path.resolve(process.env.AITEAMS_USER_DATA_PATH));
+}
 const DEFAULT_WORKSPACE_ROOT = path.resolve(process.env.AITEAMS_WORKSPACE_ROOT || APP_ROOT);
 const MAX_RECENT_WORKSPACES = 10;
 const STATUS_BUFFER_CHARS = 12000;
@@ -99,8 +105,118 @@ function appAgentConfigPath() {
   return override ? path.resolve(override) : path.join(app.getPath("userData"), "agents.json");
 }
 
+function legacyAppAgentConfigPath() {
+  const legacyDir = path.join(app.getPath("appData"), "AI Teams");
+  const currentDir = app.getPath("userData");
+  if (path.resolve(legacyDir) === path.resolve(currentDir)) {
+    return null;
+  }
+  return path.join(legacyDir, "agents.json");
+}
+
 function appRootAgentConfigPath() {
   return workspaceConfigPath(APP_ROOT);
+}
+
+function codexHome() {
+  return path.resolve(process.env.CODEX_HOME || path.join(os.homedir(), ".codex"));
+}
+
+function parseSimpleTomlScalar(value) {
+  const trimmed = String(value || "").trim();
+  if (!trimmed) {
+    return "";
+  }
+  if ((trimmed.startsWith("\"") && trimmed.endsWith("\"")) || (trimmed.startsWith("'") && trimmed.endsWith("'"))) {
+    return trimmed.slice(1, -1);
+  }
+  if (trimmed === "true") return true;
+  if (trimmed === "false") return false;
+  return trimmed.replace(/\s+#.*$/, "").trim();
+}
+
+function readCodexConfigValue(key) {
+  const configPath = path.join(codexHome(), "config.toml");
+  if (!fs.existsSync(configPath)) {
+    return undefined;
+  }
+  const keyPattern = new RegExp(`^\\s*${key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*=\\s*(.+?)\\s*$`);
+  for (const line of fs.readFileSync(configPath, "utf8").split(/\r?\n/)) {
+    const match = line.match(keyPattern);
+    if (match) {
+      return parseSimpleTomlScalar(match[1]);
+    }
+  }
+  return undefined;
+}
+
+function readCodexDesktopAgentMode() {
+  const statePath = path.join(codexHome(), ".codex-global-state.json");
+  if (!fs.existsSync(statePath)) {
+    return "";
+  }
+  try {
+    const state = readJson(statePath, {});
+    return String(state?.["electron-persisted-atom-state"]?.["agent-mode-by-host-id"]?.local || "");
+  } catch {
+    return "";
+  }
+}
+
+function defaultCodexArgs() {
+  const args = [];
+  const configuredSandbox = readCodexConfigValue("sandbox_mode");
+  if (configuredSandbox) {
+    args.push("--sandbox", String(configuredSandbox));
+  }
+  const configuredApproval = readCodexConfigValue("approval_policy") || readCodexConfigValue("ask_for_approval");
+  if (configuredApproval) {
+    args.push("--ask-for-approval", String(configuredApproval).replace(/_/g, "-"));
+  }
+  const desktopMode = readCodexDesktopAgentMode();
+  if (!configuredSandbox && !configuredApproval && desktopMode === "full-access") {
+    args.push("--dangerously-bypass-approvals-and-sandbox");
+  }
+  return args;
+}
+
+function mergeArgs(baseArgs, extraArgs) {
+  const merged = [...baseArgs];
+  for (const arg of extraArgs) {
+    if (!merged.includes(arg)) {
+      merged.push(arg);
+    }
+  }
+  return merged;
+}
+
+function codexArgsDeclarePermissions(args) {
+  return args.some((arg) => (
+    arg === "--dangerously-bypass-approvals-and-sandbox" ||
+    arg === "--sandbox" ||
+    arg.startsWith("--sandbox=") ||
+    arg === "-s" ||
+    arg === "--ask-for-approval" ||
+    arg.startsWith("--ask-for-approval=") ||
+    arg === "-a" ||
+    arg.includes("sandbox_mode") ||
+    arg.includes("approval_policy") ||
+    arg.includes("ask_for_approval")
+  ));
+}
+
+function normalizeCodexAgent(agent) {
+  if (agent?.id !== "codex" && String(agent?.command || "") !== "codex") {
+    return agent;
+  }
+  const args = Array.isArray(agent.args) ? agent.args : [];
+  return {
+    ...agent,
+    args: mergeArgs(
+      mergeArgs(args, ["--no-alt-screen"]),
+      codexArgsDeclarePermissions(args) ? [] : defaultCodexArgs()
+    )
+  };
 }
 
 function slugify(value) {
@@ -135,7 +251,7 @@ function defaultAppAgentConfig() {
         id: "codex",
         name: "Codex",
         command: "codex",
-        args: [],
+        args: mergeArgs(["--no-alt-screen"], defaultCodexArgs()),
         cwd: ".",
         enabled: true,
         permission_mode: "configure-before-start"
@@ -146,7 +262,7 @@ function defaultAppAgentConfig() {
         command: "claude",
         args: [],
         cwd: ".",
-        enabled: false,
+        enabled: true,
         permission_mode: "configure-before-start"
       },
       {
@@ -160,6 +276,23 @@ function defaultAppAgentConfig() {
       }
     ]
   };
+}
+
+function isLegacyDefaultAgentConfig(config) {
+  if (!config || typeof config !== "object") {
+    return false;
+  }
+  const agents = Array.isArray(config.agents) ? config.agents : [];
+  if (agents.length !== 3) {
+    return false;
+  }
+  const byId = new Map(agents.map((agent) => [agent.id, agent]));
+  return (
+    byId.get("codex")?.command === "codex" &&
+    byId.get("claude")?.command === "claude" &&
+    byId.get("kimi")?.command === "kimi" &&
+    agents.every((agent) => agent.cwd === "." && Array.isArray(agent.args) && agent.args.length === 0)
+  );
 }
 
 function normalizeAgentConfig(config, sourceRoot = null) {
@@ -190,10 +323,11 @@ function normalizeAgentConfig(config, sourceRoot = null) {
     ) {
       next.cwd = ".";
     }
-    return next;
+    return normalizeCodexAgent(next);
   }).filter(Boolean);
 
   return {
+    ...(config && typeof config === "object" ? config : {}),
     config_schema_version: 1,
     routing: {
       ...defaults.routing,
@@ -231,7 +365,17 @@ function loadAppAgentConfig() {
   const configPath = appAgentConfigPath();
   const existing = readJson(configPath, null);
   if (existing) {
-    return normalizeAgentConfig(existing);
+    const normalized = normalizeAgentConfig(existing);
+    writeJson(configPath, normalized);
+    return normalized;
+  }
+
+  const legacyPath = legacyAppAgentConfigPath();
+  const legacy = legacyPath ? readJson(legacyPath, null) : null;
+  if (legacy) {
+    const config = isLegacyDefaultAgentConfig(legacy) ? defaultAppAgentConfig() : normalizeAgentConfig(legacy);
+    writeJson(configPath, config);
+    return config;
   }
 
   const migrated = readJson(appRootAgentConfigPath(), null);
@@ -248,6 +392,150 @@ function prepareWorkspaceRoot(root) {
   ensureDir(normalized);
   ensureDir(path.join(normalized, ".aiteam"));
   return normalized;
+}
+
+// --- Agent import (first slice of the plugin/import design) ---------------
+// Presets carry metadata only; nothing runs until the user starts the agent.
+
+function builtinAgentPresets() {
+  return [
+    { id: "codex", name: "Codex", command: "codex", args: mergeArgs(["--no-alt-screen"], defaultCodexArgs()), cwd: ".", enabled: true, provider: "openai", permission_mode: "configure-before-start" },
+    { id: "claude", name: "Claude Code", command: "claude", args: [], cwd: ".", enabled: true, provider: "anthropic", permission_mode: "configure-before-start" },
+    { id: "kimi", name: "Kimi", command: "kimi", args: [], cwd: ".", enabled: true, provider: "moonshot", permission_mode: "configure-before-start" },
+    { id: "gemini", name: "Gemini CLI", command: "gemini", args: [], cwd: ".", enabled: true, provider: "google", permission_mode: "configure-before-start" }
+  ];
+}
+
+function commandAvailable(command) {
+  const value = String(command || "").trim();
+  if (!value) {
+    return false;
+  }
+  if (value.includes("/")) {
+    const resolved = path.isAbsolute(value) ? value : path.resolve(WORKSPACE_ROOT, value);
+    return fs.existsSync(resolved);
+  }
+  const entries = String(process.env.PATH || "").split(path.delimiter).filter(Boolean);
+  return entries.some((dir) => {
+    try {
+      fs.accessSync(path.join(dir, value), fs.constants.X_OK);
+      return true;
+    } catch {
+      return false;
+    }
+  });
+}
+
+const AGENT_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+
+function validateImportedAgentDraft(draft, takenIds) {
+  const errors = [];
+  const warnings = [];
+  if (!draft || typeof draft !== "object" || Array.isArray(draft)) {
+    return { agent: null, errors: ["Each agent must be a JSON object."], warnings };
+  }
+  const id = String(draft.id || "").trim();
+  if (!id) {
+    errors.push("Missing required field: id.");
+  } else if (!AGENT_ID_PATTERN.test(id)) {
+    errors.push(`Invalid agent id "${id}": use letters, digits, dot, dash, or underscore.`);
+  } else if (takenIds.has(id)) {
+    errors.push(`Agent id "${id}" already exists.`);
+  }
+  const command = String(draft.command || "").trim();
+  if (!command) {
+    errors.push("Missing required field: command.");
+  }
+  let args = [];
+  if (draft.args !== undefined && draft.args !== null) {
+    if (!Array.isArray(draft.args) || draft.args.some((item) => typeof item !== "string")) {
+      errors.push("Field args must be an array of strings.");
+    } else {
+      args = draft.args;
+    }
+  }
+  let cwd = ".";
+  if (draft.cwd !== undefined && draft.cwd !== null) {
+    if (typeof draft.cwd !== "string") {
+      errors.push("Field cwd must be a string.");
+    } else {
+      cwd = draft.cwd.trim() || ".";
+    }
+  }
+  if (command && !commandAvailable(command)) {
+    warnings.push(`Command "${command}" was not found on PATH; the agent cannot start until it is installed.`);
+  }
+  if (cwd !== "." && path.isAbsolute(cwd) && !fs.existsSync(cwd)) {
+    warnings.push(`Working directory ${cwd} does not exist.`);
+  }
+  // Unknown fields are kept verbatim so newer configs round-trip safely.
+  const agent = {
+    ...draft,
+    id,
+    name: String(draft.name || id),
+    command,
+    args,
+    cwd,
+    enabled: draft.enabled === undefined ? true : Boolean(draft.enabled)
+  };
+  if (!agent.permission_mode) {
+    agent.permission_mode = "configure-before-start";
+  }
+  return { agent, errors, warnings };
+}
+
+function normalizeImportPayload(payload) {
+  if (Array.isArray(payload)) {
+    return payload;
+  }
+  if (payload && typeof payload === "object") {
+    if (Array.isArray(payload.agents)) {
+      return payload.agents;
+    }
+    return [payload];
+  }
+  throw new Error("Import payload must be an agent object, an array of agents, or { agents: [...] }.");
+}
+
+function importAgents(payload, options = {}) {
+  if (loadWorkspaceDemoConfig()) {
+    throw new Error("Importing agents is disabled in the demo workspace.");
+  }
+  const drafts = normalizeImportPayload(payload);
+  if (!drafts.length) {
+    throw new Error("No agents found in the import payload.");
+  }
+  const config = loadConfig();
+  const takenIds = new Set(config.agents.map((agent) => agent.id));
+  const results = [];
+  for (const draft of drafts) {
+    const result = validateImportedAgentDraft(draft, takenIds);
+    if (result.agent?.id) {
+      takenIds.add(result.agent.id);
+    }
+    results.push(result);
+  }
+  const reviewAgents = results.map((result) => ({
+    ...(result.agent || {}),
+    warnings: result.warnings,
+    errors: result.errors
+  }));
+  const hasErrors = results.some((result) => result.errors.length);
+  if (options.dryRun) {
+    return { ok: !hasErrors, dryRun: true, agents: reviewAgents };
+  }
+  if (hasErrors) {
+    throw new Error(results.flatMap((result) => result.errors).join(" "));
+  }
+  loadAppAgentConfig(); // Ensures the config file exists before we append.
+  const configPath = appAgentConfigPath();
+  const rawConfig = readJson(configPath, null) || defaultAppAgentConfig();
+  const baseAgents = Array.isArray(rawConfig.agents) && rawConfig.agents.length
+    ? rawConfig.agents
+    : config.agents;
+  rawConfig.agents = [...baseAgents, ...results.map((result) => result.agent)];
+  writeJson(configPath, rawConfig);
+  return { ok: true, agents: reviewAgents, imported: results.map((result) => result.agent.id) };
 }
 
 function workspaceName(root) {
@@ -407,6 +695,71 @@ function isExcludedDocumentDir(name) {
   return name.startsWith(".") || DOCUMENT_EXCLUDED_DIRS.has(name);
 }
 
+const DOCUMENT_FIELD_PREVIEW_BYTES = 24 * 1024;
+const FINISHED_DOCUMENT_FIELD = /(?:^|[^a-z])(?:finish|finished|done|complete|completed|implemented|closed)(?:[^a-z]|$)|\u5df2\u5b9e\u65bd|\u5df2\u5b8c\u6210|\u5168\u90e8\u843d\u5730|\u901a\u8fc7\u9a8c\u8bc1/iu;
+const TODO_DOCUMENT_FIELD = /(?:^|[^a-z])(?:todo|to-do|draft|planned|proposal|proposed|wip|pending|open|backlog)(?:[^a-z]|$)|\u5f85\u529e|\u8349\u7a3f|\u672a\u5b8c\u6210|\u8ba1\u5212|\u5f85\u5b9e\u73b0/iu;
+
+function readDocumentFieldPreview(file, stat) {
+  const length = Math.min(stat.size, DOCUMENT_FIELD_PREVIEW_BYTES);
+  if (!length) return "";
+  let fd = null;
+  try {
+    fd = fs.openSync(file, "r");
+    const buffer = Buffer.alloc(length);
+    const bytesRead = fs.readSync(fd, buffer, 0, length, 0);
+    return buffer.toString("utf8", 0, bytesRead);
+  } catch {
+    return "";
+  } finally {
+    if (fd !== null) {
+      try {
+        fs.closeSync(fd);
+      } catch {
+        // Ignore close failures while building the document index.
+      }
+    }
+  }
+}
+
+function extractDocumentTags(value) {
+  const tags = [];
+  const pattern = /\[([^\]]+)\]/g;
+  let match = pattern.exec(value);
+  while (match) {
+    const tag = match[1].trim().toLowerCase();
+    if (tag && !tags.includes(tag)) {
+      tags.push(tag);
+    }
+    match = pattern.exec(value);
+  }
+  return tags;
+}
+
+function extractDocumentStatus(preview) {
+  const match = String(preview || "").match(/^(?:Status|\u72b6\u6001)\s*[:\uff1a]\s*(.+)$/im);
+  return match ? match[1].trim() : "";
+}
+
+function extractDocumentState(preview) {
+  const match = String(preview || "").match(/^state\s*[:\uff1a]\s*(.+)$/im);
+  const value = match ? match[1].trim() : "";
+  if (!value) return "";
+  if (FINISHED_DOCUMENT_FIELD.test(value)) return "finish";
+  if (TODO_DOCUMENT_FIELD.test(value)) return "todo";
+  return "";
+}
+
+function extractDocumentFields(file, name, relativePath, stat) {
+  const preview = readDocumentFieldPreview(file, stat);
+  const status = extractDocumentStatus(preview);
+  const tags = extractDocumentTags(`${name} ${relativePath}`);
+  return {
+    status,
+    tags,
+    state: extractDocumentState(preview)
+  };
+}
+
 function documentFromFile(file, name, pins) {
   const stat = fs.statSync(file);
   const relativePath = relativeDocumentPath(file);
@@ -418,7 +771,8 @@ function documentFromFile(file, name, pins) {
     relativePath,
     folder: parentFolder === "" ? "" : parentFolder,
     updatedAt: stat.mtime.toISOString(),
-    pinned: pins.has(relativePath)
+    pinned: pins.has(relativePath),
+    fields: extractDocumentFields(file, name, relativePath, stat)
   };
 }
 
@@ -2043,6 +2397,8 @@ ipcMain.handle("workspace:switch", (_event, targetRoot) => switchWorkspace(targe
 ipcMain.handle("workspace:choose", () => chooseWorkspace());
 
 ipcMain.handle("agents:list", () => listAgentStates());
+ipcMain.handle("agents:presets", () => builtinAgentPresets());
+ipcMain.handle("agents:import", (_event, payload, options = {}) => importAgents(payload, options));
 ipcMain.handle("agents:snapshot", (_event, agentId) => agentTerminalSnapshot(agentId));
 ipcMain.handle("agents:start", (_event, agentId) => startAgent(agentId));
 ipcMain.handle("agents:stop", (_event, agentId) => stopAgent(agentId));

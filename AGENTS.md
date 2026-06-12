@@ -16,7 +16,7 @@ Current real-agent setup (desktop app-level config in Electron userData, not the
 
 - `codex`: enabled
 - `kimi`: enabled
-- `claude`: disabled
+- `claude`: enabled
 
 ### No-Side-Effect Demo
 

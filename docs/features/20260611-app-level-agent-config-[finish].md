@@ -122,7 +122,7 @@ During migration:
 - relative or empty `cwd` becomes `.`
 - other absolute `cwd` values are preserved for specialized agents
 
-If no useful existing config is found, the app creates a default app-level config with Codex and Kimi enabled and Claude Code disabled.
+If no useful existing config is found, the app creates a default app-level config with Codex, Claude Code, and Kimi enabled.
 
 ## Implementation
 

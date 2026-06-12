@@ -21,7 +21,7 @@ The first implementation should ship these three presets only. The architecture 
 The user's Typora theme directory contains useful visual references:
 
 ```text
-/Users/anbc/Library/Application Support/abnerworks.Typora/themes/
+~/Library/Application Support/abnerworks.Typora/themes/
 ```
 
 Observed themes include:
