@@ -9,7 +9,6 @@ const targetApp = path.join(outDir, "AI Teams.app");
 const dmgPath = path.join(outDir, `AI-Teams-${require(path.join(appRoot, "package.json")).version || "0.1.0"}-${process.arch}.dmg`);
 const resourcesDir = path.join(targetApp, "Contents", "Resources");
 const appPayload = path.join(resourcesDir, "app");
-const iconsetDir = path.join(outDir, "AI Teams.iconset");
 const icnsPath = path.join(resourcesDir, "ai-teams.icns");
 
 function run(command, args, options = {}) {
@@ -49,26 +48,9 @@ function plistDelete(plist, key) {
 }
 
 function createIcon() {
-  rm(iconsetDir);
-  ensureDir(iconsetDir);
   const source = path.join(appRoot, "public", "app-icon.png");
-  const sizes = [
-    ["icon_16x16.png", 16],
-    ["icon_16x16@2x.png", 32],
-    ["icon_32x32.png", 32],
-    ["icon_32x32@2x.png", 64],
-    ["icon_128x128.png", 128],
-    ["icon_128x128@2x.png", 256],
-    ["icon_256x256.png", 256],
-    ["icon_256x256@2x.png", 512],
-    ["icon_512x512.png", 512],
-    ["icon_512x512@2x.png", 1024]
-  ];
-  for (const [name, size] of sizes) {
-    run("sips", ["-z", String(size), String(size), source, "--out", path.join(iconsetDir, name)]);
-  }
-  run("iconutil", ["-c", "icns", iconsetDir, "-o", icnsPath]);
-  rm(iconsetDir);
+  rm(icnsPath);
+  run("sips", ["-s", "format", "icns", source, "--out", icnsPath]);
 }
 
 function packageApp() {
