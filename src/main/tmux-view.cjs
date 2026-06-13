@@ -240,6 +240,7 @@ function createTmuxViewManager({
       nextState.windowId = windowResult.stdout.trim();
       await runTmuxAsync(["new-session", "-d", "-s", nextState.viewSession, "-t", baseSession]);
       await runTmuxAsync(["set-option", "-t", nextState.viewSession, "status", "off"], { check: false });
+      // Embedded wheel scrolling is local to xterm; tmux view sessions should not capture mouse events.
       await runTmuxAsync(["set-option", "-t", nextState.viewSession, "mouse", "off"], { check: false });
       await runTmuxAsync(["set-option", "-t", nextState.viewSession, "prefix", "None"], { check: false });
       await runTmuxAsync(["set-option", "-t", nextState.viewSession, "prefix2", "None"], { check: false });

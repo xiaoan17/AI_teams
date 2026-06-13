@@ -3,8 +3,16 @@ import { createRoot } from "react-dom/client";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
+import {
+  TERMINAL_SCROLLBACK_LINES,
+  filterTerminalInput,
+  filterTerminalOutput,
+  handleTerminalWheel,
+  resetTerminalMouseModes
+} from "./terminal-wheel.mjs";
 import "./styles.css";
 import { DEFAULT_THEME_ID, themePresets, themeToCssVars } from "./themes.js";
+import { installRendererLogging } from "./renderer-log.mjs";
 import aiTeamsAppIcon from "../../public/app-icon.png";
 
 const browserPreviewApi = {
@@ -124,34 +132,49 @@ const browserPreviewApi = {
   scrollAgent: async () => false,
   routeMessage: async (message, targets) => ({ targets: targets.length ? targets : ["codex"], message }),
   openPath: async () => {},
+  openExternal: async () => true,
   listAgentPresets: async () => [
-    { id: "codex", name: "Codex", command: "codex", args: [], cwd: ".", enabled: true },
-    { id: "claude", name: "Claude Code", command: "claude", args: [], cwd: ".", enabled: true },
-    { id: "kimi", name: "Kimi", command: "kimi", args: [], cwd: ".", enabled: true }
+    { id: "codex", name: "Codex", command: "codex", args: [], cwd: ".", enabled: true, provider: "openai", versionArgs: ["--version"], docUrl: "https://github.com/openai/codex" },
+    { id: "claude", name: "Claude Code", command: "claude", args: [], cwd: ".", enabled: true, provider: "anthropic", versionArgs: ["--version"], docUrl: "https://docs.claude.com/claude-code" },
+    { id: "kimi", name: "Kimi", command: "kimi", args: [], cwd: ".", enabled: true, provider: "moonshot", versionArgs: ["--version"], docUrl: "https://platform.moonshot.cn" },
+    { id: "gemini", name: "Gemini CLI", command: "gemini", args: [], cwd: ".", enabled: true, provider: "google", versionArgs: ["--version"], docUrl: "https://github.com/google-gemini/gemini-cli" }
+  ],
+  detectAgents: async () => [
+    { type: "codex", name: "Codex", command: "codex", provider: "openai", installed: true, runnable: true, version: "0.1.0", path: "/usr/local/bin/codex", source: "path", diagnostic: null, docUrl: "https://github.com/openai/codex" },
+    { type: "claude", name: "Claude Code", command: "claude", provider: "anthropic", installed: true, runnable: true, version: "1.2.3", path: "/usr/local/bin/claude", source: "path", diagnostic: null, docUrl: "https://docs.claude.com/claude-code" },
+    { type: "kimi", name: "Kimi", command: "kimi", provider: "moonshot", installed: false, runnable: false, version: null, path: null, source: null, diagnostic: null, docUrl: "https://platform.moonshot.cn" },
+    { type: "gemini", name: "Gemini CLI", command: "gemini", provider: "google", installed: true, runnable: false, version: null, path: "/usr/local/bin/gemini", source: "path", diagnostic: "spawn error (preview)", docUrl: "https://github.com/google-gemini/gemini-cli" }
   ],
   importAgents: async (payload, options = {}) => {
+    const PREVIEW_PRESET_COMMANDS = { codex: "codex", claude: "claude", kimi: "kimi", gemini: "gemini" };
     const drafts = Array.isArray(payload)
       ? payload
       : Array.isArray(payload?.agents)
         ? payload.agents
         : [payload];
-    const agents = drafts.map((draft) => ({
-      ...draft,
-      id: String(draft?.id || "").trim(),
-      name: String(draft?.name || draft?.id || ""),
-      command: String(draft?.command || "").trim(),
-      args: Array.isArray(draft?.args) ? draft.args : [],
-      cwd: draft?.cwd || ".",
-      enabled: draft?.enabled !== false,
-      warnings: ["Browser preview: imports are not persisted."],
-      errors: draft?.id && draft?.command ? [] : ["Missing required field: id and command are required."]
-    }));
+    const agents = drafts.map((draft) => {
+      const type = String(draft?.type || "").trim();
+      const command = String(draft?.command || PREVIEW_PRESET_COMMANDS[type] || "").trim();
+      return {
+        ...draft,
+        id: String(draft?.id || "").trim(),
+        type: type || String(draft?.id || ""),
+        name: String(draft?.name || draft?.id || ""),
+        command,
+        args: Array.isArray(draft?.args) ? draft.args : [],
+        cwd: draft?.cwd || ".",
+        enabled: draft?.enabled !== false,
+        warnings: ["Browser preview: imports are not persisted."],
+        errors: draft?.id && command ? [] : ["Missing required field: id and command are required."]
+      };
+    });
     const ok = agents.every((agent) => !agent.errors.length);
     if (!options.dryRun && !ok) {
       throw new Error(agents.flatMap((agent) => agent.errors).join(" "));
     }
-    return { ok, agents, imported: ok && !options.dryRun ? agents.map((agent) => agent.id) : [] };
+    return { ok, agents, imported: ok && !options.dryRun ? agents.map((agent) => agent.id) : [], limitError: null };
   },
+  removeAgent: async (agentId) => ({ ok: true, removed: agentId, remaining: [] }),
   // Emit small sample output in browser preview without real agents.
   onAgentData: (callback) => {
     const timer = setInterval(() => callback({ id: "codex", data: "·" }), 1400);
@@ -163,75 +186,6 @@ const browserPreviewApi = {
 };
 
 const api = window.aiTeams || browserPreviewApi;
-
-function filterTerminalInput(data) {
-  return String(data || "")
-    .replace(/\x1b\[(?:I|O)/g, "")
-    .replace(/\x1b\[M[\s\S]{0,3}/g, "")
-    .replace(/\x1b\[<[\d;]*[mM]/g, "")
-    .replace(/\x1b\][\s\S]*?(?:\x07|\x1b\\)/g, "")
-    .replace(/\x1bP[\s\S]*?(?:\x07|\x1b\\)/g, "")
-    .replace(/\x1b\[\??[0-9;]*[Rc]/g, "");
-}
-
-const terminalMouseModeParams = new Set([
-  "9",
-  "1000",
-  "1001",
-  "1002",
-  "1003",
-  "1004",
-  "1005",
-  "1006",
-  "1015"
-]);
-const terminalMouseModeReset = `\x1b[?${[...terminalMouseModeParams].join(";")}l`;
-
-function incompleteEscapeStart(value) {
-  const escapeIndex = value.lastIndexOf("\x1b");
-  if (escapeIndex === -1) return -1;
-  const tail = value.slice(escapeIndex);
-  if (tail === "\x1b") return escapeIndex;
-  if (tail.startsWith("\x1b[")) {
-    for (let index = 2; index < tail.length; index += 1) {
-      const code = tail.charCodeAt(index);
-      if (code >= 0x40 && code <= 0x7e) return -1;
-    }
-    return escapeIndex;
-  }
-  if ((tail.startsWith("\x1b]") || tail.startsWith("\x1bP")) && !tail.includes("\x07") && !tail.includes("\x1b\\")) {
-    return escapeIndex;
-  }
-  return -1;
-}
-
-function completeTerminalOutput(data, pendingRef) {
-  const value = `${pendingRef.current || ""}${data || ""}`;
-  const pendingStart = incompleteEscapeStart(value);
-  if (pendingStart === -1) {
-    pendingRef.current = "";
-    return value;
-  }
-  pendingRef.current = value.slice(pendingStart);
-  return value.slice(0, pendingStart);
-}
-
-function filterTerminalOutput(data, pendingRef) {
-  return completeTerminalOutput(String(data || ""), pendingRef).replace(/\x1b\[\?([0-9;]*)([hl])/g, (match, params, action) => {
-    if (action !== "h") return match;
-    if (!params) return match;
-    const keptParams = params.split(";").filter((param) => param && !terminalMouseModeParams.has(param));
-    return keptParams.length ? `\x1b[?${keptParams.join(";")}${action}` : "";
-  });
-}
-
-function resetTerminalMouseModes(terminal) {
-  try {
-    terminal.write(terminalMouseModeReset);
-  } catch {
-    // Selection should stay best-effort if the terminal is already disposed.
-  }
-}
 
 function snapshotToTerminalData(data) {
   return `\x1bc${String(data || "").replace(/\r?\n/g, "\r\n")}`;
@@ -263,6 +217,10 @@ function stoppedOrExited(agent) {
     agent.status === "missing_runtime" ||
     agent.status === "pane_missing"
   );
+}
+
+function staleRouteNotice(value) {
+  return /route:send|recorded pane is missing|Cannot send broadcast|Message may not have been injected/i.test(String(value || ""));
 }
 
 function pickActiveAgentId(agentList, currentId = null, minimized = null) {
@@ -539,9 +497,10 @@ function AgentTerminal({ agent, active, hidden, terminalTheme, onFocus, onNotice
       lineHeight: 1.2,
       macOptionClickForcesSelection: true,
       rescaleOverlappingGlyphs: true,
-      scrollback: 8000,
+      scrollback: TERMINAL_SCROLLBACK_LINES,
       theme: terminalThemeRef.current
     });
+    terminal.attachCustomWheelEventHandler((event) => handleTerminalWheel(event, terminal));
     const refreshViewport = () => {
       if (disposed || !termRef.current) return;
       if (refreshFrame) return;
@@ -786,6 +745,7 @@ function Sidebar({
   onToggleDocumentPinned,
   onStart,
   onStop,
+  onRemove,
   onToggleMinimize,
   onStartEnabled,
   onStopEnabled,
@@ -1041,6 +1001,18 @@ function Sidebar({
                     </button>
                   </>
                 )}
+                <button
+                  className="icon-button agent-remove"
+                  type="button"
+                  title="Remove agent from config"
+                  aria-label={`Remove ${agent.name}`}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    onRemove(agent.id);
+                  }}
+                >
+                  🗑
+                </button>
               </span>
             </div>
           );
@@ -1096,12 +1068,29 @@ function Sidebar({
 const Composer = forwardRef(function Composer({ agents, documents, activeAgentId, taskPath, onTaskPathChange, onRoute }, ref) {
   const [value, setValue] = useState("");
   const [sending, setSending] = useState(false);
+  const [docMenuOpen, setDocMenuOpen] = useState(false);
+  const [docQuery, setDocQuery] = useState("");
   const textareaRef = useRef(null);
+  const docPickerRef = useRef(null);
   const selectionRef = useRef({ start: 0, end: 0 });
   const pendingCursorRef = useRef(null);
   const composingRef = useRef(false);
   const documentList = documents?.documents || [];
   const enabledAgents = useMemo(() => agents.filter((agent) => agent.enabled), [agents]);
+  const attachedDocument = useMemo(
+    () => documentList.find((document) => document.path === taskPath) || null,
+    [documentList, taskPath]
+  );
+  const docPickerOptions = useMemo(() => {
+    const query = normalizeSearch(docQuery);
+    if (!query) return documentList;
+    return documentList.filter((document) => [
+      document.name,
+      document.relativePath,
+      document.folder ? documentDisplayPath(document) : "",
+      document.path
+    ].some((part) => String(part || "").toLowerCase().includes(query)));
+  }, [docQuery, documentList]);
   const hasMention = useMemo(() => /@ ?[A-Za-z0-9_-]+/.test(value), [value]);
   const mentionPreview = useMemo(() => {
     const mentions = [...value.matchAll(/@ ?([A-Za-z0-9_-]+)/g)].map((match) => match[1]);
@@ -1167,6 +1156,26 @@ const Composer = forwardRef(function Composer({ agents, documents, activeAgentId
     selectionRef.current = { start: nextCursor, end: nextCursor };
   }, [value]);
 
+  useEffect(() => {
+    if (!docMenuOpen) return undefined;
+    const closeOnOutsidePointer = (event) => {
+      if (docPickerRef.current && !docPickerRef.current.contains(event.target)) {
+        setDocMenuOpen(false);
+      }
+    };
+    const closeOnEscape = (event) => {
+      if (event.key === "Escape") {
+        setDocMenuOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", closeOnOutsidePointer, true);
+    document.addEventListener("keydown", closeOnEscape, true);
+    return () => {
+      document.removeEventListener("mousedown", closeOnOutsidePointer, true);
+      document.removeEventListener("keydown", closeOnEscape, true);
+    };
+  }, [docMenuOpen]);
+
   const insertLineBreak = useCallback((event) => {
     const textarea = event.currentTarget;
     const start = textarea.selectionStart;
@@ -1186,18 +1195,87 @@ const Composer = forwardRef(function Composer({ agents, documents, activeAgentId
         <div className="composer-targets">
           {hasMention ? `Targets: ${mentionPreview.length ? mentionPreview.map((item) => `@${item}`).join(" ") : "none"}` : ""}
         </div>
-        <label className={taskPath ? "handoff-armed" : ""}>
-          Attach doc
-          <select value={taskPath} onChange={(event) => onTaskPathChange(event.target.value)}>
-            <option value="">No doc</option>
-            {documentList.map((document) => (
-              <option key={document.path} value={document.path}>
-                {document.pinned ? "★ " : ""}
-                {documentFolderLabel(document.folder)}/{document.name}
-              </option>
-            ))}
-          </select>
-        </label>
+        <div className="composer-doc-tools" ref={docPickerRef}>
+          {attachedDocument ? (
+            <span className="attachment-chip" title={`Attached: ${attachedDocument.relativePath}`}>
+              <span className="attachment-chip-label">{attachedDocument.name}</span>
+              <button
+                type="button"
+                title="Remove attached doc"
+                aria-label="Remove attached doc"
+                onClick={() => onTaskPathChange("")}
+              >
+                x
+              </button>
+            </span>
+          ) : null}
+          <button
+            className="attach-doc-button"
+            type="button"
+            title={attachedDocument ? "Change attached doc" : "Attach doc"}
+            aria-label={attachedDocument ? "Change attached doc" : "Attach doc"}
+            aria-haspopup="dialog"
+            aria-expanded={docMenuOpen}
+            onClick={() => {
+              setDocMenuOpen((open) => {
+                if (!open) setDocQuery("");
+                return !open;
+              });
+            }}
+          >
+            📎
+          </button>
+          {docMenuOpen ? (
+            <div className="doc-picker-menu" role="dialog" aria-label="Attach doc">
+              <input
+                className="doc-picker-search"
+                type="search"
+                value={docQuery}
+                placeholder="Search docs"
+                onChange={(event) => setDocQuery(event.target.value)}
+                autoFocus
+              />
+              <div className="doc-picker-list">
+                {attachedDocument ? (
+                  <button
+                    type="button"
+                    className="doc-picker-option doc-picker-clear"
+                    onClick={() => {
+                      onTaskPathChange("");
+                      setDocMenuOpen(false);
+                      setDocQuery("");
+                    }}
+                  >
+                    No doc
+                  </button>
+                ) : null}
+                {docPickerOptions.length ? docPickerOptions.map((document) => (
+                  <button
+                    key={document.path}
+                    type="button"
+                    className={[
+                      "doc-picker-option",
+                      document.path === taskPath ? "doc-picker-option-active" : ""
+                    ].filter(Boolean).join(" ")}
+                    onClick={() => {
+                      onTaskPathChange(document.path);
+                      setDocMenuOpen(false);
+                      setDocQuery("");
+                    }}
+                  >
+                    <span>
+                      {document.pinned ? "★ " : ""}
+                      {document.name}
+                    </span>
+                    <small>{documentFolderLabel(document.folder)}</small>
+                  </button>
+                )) : (
+                  <div className="doc-picker-empty">No matching docs</div>
+                )}
+              </div>
+            </div>
+          ) : null}
+        </div>
       </div>
       <div className="composer-row">
         <textarea
@@ -1268,29 +1346,48 @@ const IMPORT_JSON_PLACEHOLDER = `{
   ]
 }`;
 
-function AgentImportModal({ onClose, onImported, onNotice }) {
+const MAX_AGENTS = 3;
+
+function AgentImportModal({ onClose, onImported, onNotice, existingCount = 0, existingIds = [] }) {
   const [source, setSource] = useState("preset");
   const [presets, setPresets] = useState([]);
   const [presetId, setPresetId] = useState("");
+  const [detections, setDetections] = useState([]);
   const [jsonText, setJsonText] = useState("");
   const [review, setReview] = useState(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const atLimit = existingCount >= MAX_AGENTS;
 
   useEffect(() => {
     let mounted = true;
-    Promise.resolve()
-      .then(() => api.listAgentPresets?.() || [])
-      .then((list) => {
+    Promise.all([
+      Promise.resolve().then(() => api.listAgentPresets?.() || []),
+      Promise.resolve().then(() => api.detectAgents?.() || [])
+    ])
+      .then(([list, detected]) => {
         if (!mounted) return;
         setPresets(Array.isArray(list) ? list : []);
-        setPresetId((current) => current || list?.[0]?.id || "");
+        setDetections(Array.isArray(detected) ? detected : []);
+        // Prefer defaulting to a type that is actually runnable on this machine.
+        const runnableId = Array.isArray(detected)
+          ? detected.find((item) => item.runnable)?.type
+          : "";
+        setPresetId((current) => current || runnableId || list?.[0]?.id || "");
       })
       .catch(() => {});
     return () => {
       mounted = false;
     };
   }, []);
+
+  const detectionByType = useMemo(() => {
+    const map = new Map();
+    for (const item of detections) {
+      map.set(item.type, item);
+    }
+    return map;
+  }, [detections]);
 
   useEffect(() => {
     const onKeyDown = (event) => {
@@ -1303,8 +1400,26 @@ function AgentImportModal({ onClose, onImported, onNotice }) {
   const buildPayload = useCallback(() => {
     if (source === "preset") {
       const preset = presets.find((item) => item.id === presetId);
-      if (!preset) throw new Error("Choose a preset first.");
-      return { agents: [preset] };
+      if (!preset) throw new Error("Choose an agent type first.");
+      // Build an instance from the picked type: generate a unique instance id like
+      // claude-1 / claude-2, derive a numbered display name, and let the main process
+      // inherit command/args from the type. This is what allows duplicates of one type.
+      const taken = new Set(existingIds);
+      let n = 1;
+      let instanceId = `${preset.id}-${n}`;
+      while (taken.has(instanceId)) {
+        n += 1;
+        instanceId = `${preset.id}-${n}`;
+      }
+      return {
+        agents: [
+          {
+            id: instanceId,
+            type: preset.id,
+            name: `${preset.name} #${n}`
+          }
+        ]
+      };
     }
     const text = jsonText.trim();
     if (!text) throw new Error("Paste an agent config JSON first.");
@@ -1315,7 +1430,7 @@ function AgentImportModal({ onClose, onImported, onNotice }) {
       throw new Error(`Invalid JSON: ${parseError.message}`);
     }
     return parsed;
-  }, [jsonText, presetId, presets, source]);
+  }, [existingIds, jsonText, presetId, presets, source]);
 
   const reviewDraft = useCallback(async () => {
     setBusy(true);
@@ -1393,22 +1508,70 @@ function AgentImportModal({ onClose, onImported, onNotice }) {
           </div>
 
           {source === "preset" ? (
-            <label className="import-field">
-              <span>Preset</span>
-              <select
-                value={presetId}
-                onChange={(event) => {
-                  setPresetId(event.target.value);
-                  invalidateReview();
-                }}
-              >
-                {presets.map((preset) => (
-                  <option key={preset.id} value={preset.id}>
-                    {preset.name} ({preset.command})
-                  </option>
-                ))}
-              </select>
-            </label>
+            <>
+              <label className="import-field">
+                <span>Agent type</span>
+                <select
+                  value={presetId}
+                  onChange={(event) => {
+                    setPresetId(event.target.value);
+                    invalidateReview();
+                  }}
+                >
+                  {presets.map((preset) => {
+                    const detection = detectionByType.get(preset.id);
+                    const dot = !detection || !detection.installed ? "○" : detection.runnable ? "●" : "◐";
+                    return (
+                      <option key={preset.id} value={preset.id}>
+                        {dot} {preset.name} ({preset.command})
+                        {detection?.version ? ` · v${detection.version}` : ""}
+                        {detection && !detection.installed ? " · 未安装" : ""}
+                        {detection?.installed && !detection.runnable ? " · 无法运行" : ""}
+                      </option>
+                    );
+                  })}
+                </select>
+              </label>
+              {(() => {
+                const detection = detectionByType.get(presetId);
+                if (!detection) return null;
+                if (detection.runnable) {
+                  return (
+                    <div className="import-detect import-detect-ok">
+                      ● 已检测到{detection.version ? ` v${detection.version}` : ""}
+                      {detection.source && detection.source !== "path" ? `（来源：${detection.source}）` : ""}
+                      {detection.path ? <div className="import-detect-path"><code>{detection.path}</code></div> : null}
+                    </div>
+                  );
+                }
+                if (detection.installed) {
+                  return (
+                    <div className="import-detect import-detect-warn">
+                      ◐ 已安装但无法运行：{detection.diagnostic || "未知错误"}
+                    </div>
+                  );
+                }
+                return (
+                  <div className="import-detect import-detect-missing">
+                    ○ 本机未检测到 <code>{detection.command}</code>。
+                    {detection.docUrl ? (
+                      <>
+                        {" "}
+                        <a
+                          href="#"
+                          onClick={(event) => {
+                            event.preventDefault();
+                            api.openExternal?.(detection.docUrl);
+                          }}
+                        >
+                          查看安装指引
+                        </a>
+                      </>
+                    ) : null}
+                  </div>
+                );
+              })()}
+            </>
           ) : (
             <label className="import-field">
               <span>Agent config JSON</span>
@@ -1427,7 +1590,15 @@ function AgentImportModal({ onClose, onImported, onNotice }) {
           <div className="import-hint">
             Imported agents are saved as drafts in your agent config and never start automatically. Unknown
             fields are kept as-is and ignored by the app.
+            <div className="import-hint-limit">
+              当前已配置 {existingCount} / {MAX_AGENTS} 个 agent。同类型可重复添加（如两个 Claude），最多 {MAX_AGENTS} 个。
+            </div>
           </div>
+
+          {atLimit ? (
+            <div className="modal-error">已达到上限：最多配置 {MAX_AGENTS} 个 agent。请先在侧边栏移除一个再添加。</div>
+          ) : null}
+          {review?.limitError ? <div className="modal-error">{review.limitError}</div> : null}
 
           {review?.agents?.length ? (
             <div className="import-review">
@@ -1458,15 +1629,21 @@ function AgentImportModal({ onClose, onImported, onNotice }) {
           <button className="modal-button" type="button" onClick={onClose} disabled={busy}>
             Cancel
           </button>
-          <button className="modal-button" type="button" onClick={reviewDraft} disabled={busy}>
+          <button
+            className="modal-button"
+            type="button"
+            onClick={reviewDraft}
+            disabled={busy || atLimit}
+            title={atLimit ? `最多配置 ${MAX_AGENTS} 个 agent` : "Validate the draft"}
+          >
             Review
           </button>
           <button
             className="modal-button modal-button-primary"
             type="button"
             onClick={confirmImport}
-            disabled={busy || !review?.ok}
-            title={review?.ok ? "Save to agent config" : "Review the draft first"}
+            disabled={busy || atLimit || !review?.ok}
+            title={atLimit ? `最多配置 ${MAX_AGENTS} 个 agent` : review?.ok ? "Save to agent config" : "Review the draft first"}
           >
             Import
           </button>
@@ -1597,6 +1774,39 @@ function App() {
     });
   }, []);
 
+  // Cmd/Ctrl+Alt+Arrow cycles the active window. We deliberately require a
+  // modifier: bare arrows must stay with the focused terminal so they keep
+  // moving the cursor in the underlying CLI. Capturing here (before xterm) and
+  // preventDefault keep the chord from leaking into the PTY.
+  useEffect(() => {
+    const isMac = navigator.platform.toUpperCase().includes("MAC");
+    const onKeyDown = (event) => {
+      const mod = isMac ? event.metaKey : event.ctrlKey;
+      if (!mod || !event.altKey || event.shiftKey) return;
+      const dir = event.key === "ArrowRight" ? "right" : event.key === "ArrowLeft" ? "left" : null;
+      if (!dir) return;
+
+      // Owning the chord regardless of outcome keeps it out of the PTY.
+      event.preventDefault();
+      event.stopPropagation();
+
+      // A modal owns the keyboard while open; don't cycle behind it.
+      if (importOpen) return;
+
+      const visible = agents.filter((agent) => !minimizedAgents.has(agent.id));
+      if (visible.length <= 1) return;
+
+      const len = visible.length;
+      const idx = visible.findIndex((agent) => agent.id === activeAgentId);
+      const next = dir === "right"
+        ? (idx < 0 ? 0 : (idx + 1) % len)
+        : (idx < 0 ? len - 1 : (idx - 1 + len) % len);
+      setActiveAgentId(visible[next].id);
+    };
+    document.addEventListener("keydown", onKeyDown, true);
+    return () => document.removeEventListener("keydown", onKeyDown, true);
+  }, [agents, activeAgentId, minimizedAgents, importOpen]);
+
   const refreshAgents = useCallback(async () => {
     const nextAgents = await api.listAgents();
     setAgents(nextAgents);
@@ -1664,6 +1874,14 @@ function App() {
     setActiveAgentId((current) => pickActiveAgentId(agents, current, minimizedAgents));
   }, [agents, minimizedAgents]);
 
+  useEffect(() => {
+    if (!staleRouteNotice(notice)) return;
+    const enabled = agents.filter((agent) => agent.enabled);
+    if (enabled.length && enabled.every((agent) => !stoppedOrExited(agent))) {
+      setNotice("");
+    }
+  }, [agents, notice]);
+
   const startAgent = async (agentId) => {
     try {
       clearMinimized([agentId]);
@@ -1680,6 +1898,23 @@ function App() {
       clearMinimized([agentId]);
       await api.stopAgent(agentId);
       await refreshAgents();
+    } catch (error) {
+      setNotice(error.message);
+    }
+  };
+
+  const removeAgent = async (agentId) => {
+    const target = agents.find((agent) => agent.id === agentId);
+    const label = target?.name || agentId;
+    const confirmed = typeof window !== "undefined" && typeof window.confirm === "function"
+      ? window.confirm(`确认从配置中移除「${label}」？运行中的会先停止，可之后重新添加。`)
+      : true;
+    if (!confirmed) return;
+    try {
+      clearMinimized([agentId]);
+      await api.removeAgent?.(agentId);
+      await refreshAgents();
+      setNotice(`已移除 @${agentId}。`);
     } catch (error) {
       setNotice(error.message);
     }
@@ -1716,9 +1951,11 @@ function App() {
   const route = async (message, targets = [], options = {}) => {
     try {
       await api.routeMessage(message, targets, options);
+      await refreshAgents();
       setNotice("");
     } catch (error) {
       setNotice(error.message);
+      refreshAgents().catch(() => {});
     }
   };
 
@@ -1808,6 +2045,7 @@ function App() {
         onToggleDocumentPinned={toggleDocumentPinned}
         onStart={startAgent}
         onStop={stopAgent}
+        onRemove={removeAgent}
         onToggleMinimize={toggleAgentMinimized}
         onStartEnabled={startEnabled}
         onStopEnabled={stopEnabled}
@@ -1866,6 +2104,8 @@ function App() {
       </main>
       {importOpen ? (
         <AgentImportModal
+          existingCount={agents.length}
+          existingIds={agents.map((agent) => agent.id)}
           onClose={() => setImportOpen(false)}
           onNotice={setNotice}
           onImported={() => {
@@ -1879,6 +2119,11 @@ function App() {
 }
 
 const rootElement = document.getElementById("root");
+// Only wire renderer→main log forwarding in the real Electron app; the browser
+// preview has no IPC bridge for electron-log to reach.
+if (window.aiTeams) {
+  installRendererLogging();
+}
 const root = rootElement.__aiTeamsRoot || createRoot(rootElement);
 rootElement.__aiTeamsRoot = root;
 root.render(<App />);

@@ -1,0 +1,10 @@
+<svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc">
+  <title id="title">AI Teams Worktree Prism</title>
+  <desc id="desc">A monolithic prism cut by a parallel worktree fork.</desc>
+  <path fill="currentColor" fill-rule="evenodd" d="
+    M50 9L83 28V72L50 91L17 72V28L50 9Z
+
+    M33 31C36 31 38 33 38 36V44C49 43 53 27 67 27H76C79 27 81 29 81 32V36C81 39 79 41 76 41H68C56 41 53 56 38 57V64C49 65 54 74 67 74H76C79 74 81 76 81 79V83C81 86 79 88 76 88H67C51 88 46 75 38 72V75C38 78 36 80 33 80C30 80 28 78 28 75V36C28 33 30 31 33 31Z
+  "/>
+  <path d="M50 9V91" stroke="currentColor" stroke-width="3" opacity=".18" stroke-linecap="round"/>
+</svg>

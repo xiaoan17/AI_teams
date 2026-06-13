@@ -1,0 +1,14 @@
+<svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc">
+  <title id="title">AI Teams Worktree Flow</title>
+  <desc id="desc">A light branching-flow mark for parallel agent worktrees and review.</desc>
+  <g fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M30 75V28" stroke-width="7"/>
+    <path d="M30 44C43 44 49 30 63 30H74" stroke-width="7"/>
+    <path d="M30 56C43 56 49 70 63 70H74" stroke-width="7" opacity=".72"/>
+    <path d="M55 50H76" stroke-width="4.5" opacity=".32"/>
+    <circle cx="30" cy="75" r="7" fill="currentColor" stroke="none"/>
+    <circle cx="30" cy="28" r="6" fill="currentColor" stroke="none" opacity=".64"/>
+    <circle cx="74" cy="30" r="7" fill="currentColor" stroke="none"/>
+    <circle cx="74" cy="70" r="7" fill="currentColor" stroke="none"/>
+  </g>
+</svg>

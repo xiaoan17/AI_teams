@@ -1,0 +1,12 @@
+<svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc">
+  <title id="title">AI Teams Paper Router</title>
+  <desc id="desc">A light context document mark with routed command lanes.</desc>
+  <g fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M31 16H59L80 37V73C80 80 75 85 68 85H32C25 85 20 80 20 73V27C20 20 24 16 31 16Z" stroke-width="6.5"/>
+    <path d="M59 17V31C59 35 62 38 66 38H79" stroke-width="5.2"/>
+    <path d="M36 45H58" stroke-width="5"/>
+    <path d="M36 60H51" stroke-width="5" opacity=".42"/>
+    <path d="M58 71H67C72 71 75 68 75 63V55" stroke-width="5.2"/>
+    <path d="M70 52L75 57L80 52" stroke-width="5.2"/>
+  </g>
+</svg>

@@ -1,0 +1,13 @@
+<svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc">
+  <title id="title">AI Teams Team Orbit</title>
+  <desc id="desc">Three agent bodies orbit a quiet command center with a deliberate asymmetry.</desc>
+  <g fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M50 19A31 31 0 0 1 79 60" stroke-width="3.2"/>
+    <path d="M75 67A31 31 0 0 1 28 71" stroke-width="3.2" opacity=".72"/>
+    <path d="M22 62A31 31 0 0 1 40 21" stroke-width="3.2" opacity=".42"/>
+    <circle cx="50" cy="50" r="8" fill="currentColor" stroke="none"/>
+    <circle cx="50" cy="19" r="5.5" fill="currentColor" stroke="none"/>
+    <circle cx="79" cy="60" r="5" fill="currentColor" stroke="none"/>
+    <circle cx="28" cy="71" r="4.5" fill="currentColor" stroke="none" opacity=".82"/>
+  </g>
+</svg>

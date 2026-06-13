@@ -1,0 +1,12 @@
+<svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc">
+  <title id="title">AI Teams Command Monad</title>
+  <desc id="desc">A fused team form with command channels carved into the body.</desc>
+  <path fill="currentColor" fill-rule="evenodd" d="
+    M27 68C14 57 17 38 32 31C43 26 49 31 55 21C65 6 88 20 82 39C80 47 74 51 80 60C89 74 72 89 58 76C49 68 42 81 27 68Z
+
+    M50 51A8 8 0 1 0 34 51A8 8 0 1 0 50 51Z
+    M58 39H74A4 4 0 0 1 74 47H58A4 4 0 0 1 58 39Z
+    M58 55H70A4 4 0 0 1 70 63H58A4 4 0 0 1 58 55Z
+    M72 67A4 4 0 1 0 64 67A4 4 0 1 0 72 67Z
+  "/>
+</svg>

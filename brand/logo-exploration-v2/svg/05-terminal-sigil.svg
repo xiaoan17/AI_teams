@@ -1,0 +1,10 @@
+<svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc">
+  <title id="title">AI Teams Terminal Sigil</title>
+  <desc id="desc">A custom geometric sigil with a negative-space A aperture.</desc>
+  <path fill="currentColor" fill-rule="evenodd" d="
+    M35 17H65C76 17 83 24 83 35V65C83 76 76 83 65 83H35C24 83 17 76 17 65V35C17 24 24 17 35 17Z
+
+    M31 72L45 30C46 26 49 24 52 24C55 24 57 26 59 30L73 72H62L58 61H42L38 72H31Z
+    M46 52H54L50 39L46 52Z
+  "/>
+</svg>

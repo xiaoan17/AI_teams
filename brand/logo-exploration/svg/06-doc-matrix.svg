@@ -1,0 +1,18 @@
+<svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc">
+  <title id="title">AI Teams Doc Matrix</title>
+  <desc id="desc">A structured document matrix with one missing cell as negative space and a routed emphasis.</desc>
+  <g fill="currentColor">
+    <rect x="25" y="23" width="12" height="12" rx="3"/>
+    <rect x="44" y="23" width="12" height="12" rx="3"/>
+    <rect x="63" y="23" width="12" height="12" rx="3" opacity=".5"/>
+    <rect x="25" y="42" width="12" height="12" rx="3" opacity=".58"/>
+    <rect x="44" y="42" width="12" height="12" rx="3"/>
+    <rect x="63" y="42" width="12" height="12" rx="3"/>
+    <rect x="25" y="61" width="12" height="12" rx="3"/>
+    <rect x="44" y="61" width="12" height="12" rx="3" opacity=".62"/>
+  </g>
+  <g fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M50 67C64 67 72 61 75 48" stroke-width="3" opacity=".55"/>
+    <circle cx="75" cy="67" r="6.5" fill="currentColor" stroke="none"/>
+  </g>
+</svg>

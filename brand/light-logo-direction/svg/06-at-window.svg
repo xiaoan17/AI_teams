@@ -1,0 +1,11 @@
+<svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc">
+  <title id="title">AI Teams AT Window</title>
+  <desc id="desc">A light app-window sigil with an abstract AT command shape.</desc>
+  <g fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round">
+    <rect x="18" y="18" width="64" height="64" rx="17" stroke-width="6.5"/>
+    <path d="M34 66L50 31L66 66" stroke-width="6.2"/>
+    <path d="M41 52H59" stroke-width="5"/>
+    <path d="M31 31H69" stroke-width="5" opacity=".42"/>
+    <path d="M51 31V69" stroke-width="5" opacity=".42"/>
+  </g>
+</svg>

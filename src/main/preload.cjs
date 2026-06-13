@@ -8,7 +8,9 @@ contextBridge.exposeInMainWorld("aiTeams", {
   chooseWorkspace: () => ipcRenderer.invoke("workspace:choose"),
   listAgents: () => ipcRenderer.invoke("agents:list"),
   listAgentPresets: () => ipcRenderer.invoke("agents:presets"),
+  detectAgents: () => ipcRenderer.invoke("agents:detect"),
   importAgents: (payload, options = {}) => ipcRenderer.invoke("agents:import", payload, options),
+  removeAgent: (agentId) => ipcRenderer.invoke("agents:remove", agentId),
   getAgentSnapshot: (agentId) => ipcRenderer.invoke("agents:snapshot", agentId),
   startAgent: (agentId) => ipcRenderer.invoke("agents:start", agentId),
   stopAgent: (agentId) => ipcRenderer.invoke("agents:stop", agentId),
@@ -22,6 +24,7 @@ contextBridge.exposeInMainWorld("aiTeams", {
   toggleDocumentPinned: (relativePath) => ipcRenderer.invoke("documents:togglePinned", relativePath),
   getGitStatus: () => ipcRenderer.invoke("git:status"),
   openPath: (targetPath) => ipcRenderer.invoke("shell:openPath", targetPath),
+  openExternal: (url) => ipcRenderer.invoke("shell:openExternal", url),
   onAgentData: (callback) => {
     const wrapped = (_event, payload) => callback(payload);
     ipcRenderer.on("agent:data", wrapped);

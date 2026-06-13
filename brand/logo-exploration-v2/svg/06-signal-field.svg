@@ -1,0 +1,16 @@
+<svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc">
+  <title id="title">AI Teams Signal Field</title>
+  <desc id="desc">A status field with a carved focus point and agent lanes.</desc>
+  <path fill="currentColor" fill-rule="evenodd" d="
+    M89 50A39 39 0 1 0 11 50A39 39 0 1 0 89 50Z
+
+    M61 50A11 11 0 1 0 39 50A11 11 0 1 0 61 50Z
+    M47 18H54V36H47V18Z
+    M47 64H54V82H47V64Z
+    M64 47H82V54H64V47Z
+    M18 47H36V54H18V47Z
+    M30 25L43 38L38 43L25 30L30 25Z
+    M70 25L75 30L62 43L57 38L70 25Z
+  "/>
+  <path d="M50 11A39 39 0 0 1 87 38" fill="none" stroke="currentColor" stroke-width="6" stroke-linecap="round"/>
+</svg>

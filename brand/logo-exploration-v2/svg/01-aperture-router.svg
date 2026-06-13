@@ -1,0 +1,14 @@
+<svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc">
+  <title id="title">AI Teams Aperture Router</title>
+  <desc id="desc">A solid routed aperture with command lanes cut through the body.</desc>
+  <path fill="currentColor" fill-rule="evenodd" d="
+    M50 11C72 11 88 28 88 49C88 71 72 87 49 89C27 91 11 74 11 52C11 29 28 11 50 11Z
+
+    M61 50A11 11 0 1 0 39 50A11 11 0 1 0 61 50Z
+
+    M27 27H50A4 4 0 0 1 50 35H27A4 4 0 0 1 27 27Z
+    M27 46H45A4 4 0 0 1 45 54H27A4 4 0 0 1 27 46Z
+    M27 65H50A4 4 0 0 1 50 73H27A4 4 0 0 1 27 65Z
+    M58 46H80A4 4 0 0 1 80 54H58A4 4 0 0 1 58 46Z
+  "/>
+</svg>

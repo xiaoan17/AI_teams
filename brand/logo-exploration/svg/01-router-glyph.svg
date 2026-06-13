@@ -1,0 +1,13 @@
+<svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc">
+  <title id="title">AI Teams Router Glyph</title>
+  <desc id="desc">A compact routing mark with three agent nodes flowing into one command rail.</desc>
+  <g fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M23 28H49C57 28 61 34 61 42V58C61 66 57 72 49 72H23" stroke-width="4"/>
+    <path d="M61 50H80" stroke-width="4"/>
+    <path d="M23 50H47" stroke-width="3" opacity=".42"/>
+    <circle cx="23" cy="28" r="5.5" fill="currentColor" stroke="none"/>
+    <circle cx="23" cy="50" r="4.5" fill="currentColor" stroke="none" opacity=".62"/>
+    <circle cx="23" cy="72" r="5.5" fill="currentColor" stroke="none"/>
+    <circle cx="80" cy="50" r="7" fill="currentColor" stroke="none"/>
+  </g>
+</svg>

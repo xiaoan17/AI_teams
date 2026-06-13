@@ -1,0 +1,12 @@
+<svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc">
+  <title id="title">AI Teams Light Dispatch Core</title>
+  <desc id="desc">A light command router mark with three routed lanes and a human command core.</desc>
+  <g fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M21 29H43C54 29 61 36 61 47V53C61 64 54 71 43 71H21" stroke-width="7.5"/>
+    <path d="M61 50H80" stroke-width="7.5"/>
+    <path d="M27 50H45" stroke-width="5" opacity=".34"/>
+    <circle cx="21" cy="29" r="7" fill="currentColor" stroke="none"/>
+    <circle cx="21" cy="71" r="7" fill="currentColor" stroke="none"/>
+    <circle cx="80" cy="50" r="8" fill="currentColor" stroke="none"/>
+  </g>
+</svg>

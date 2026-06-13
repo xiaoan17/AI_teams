@@ -1,0 +1,16 @@
+<svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc">
+  <title id="title">AI Teams Command Spark</title>
+  <desc id="desc">A bright command spark where three agents are routed by one focused center.</desc>
+  <g fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round">
+    <circle cx="50" cy="50" r="10" fill="currentColor" stroke="none"/>
+    <path d="M50 22V34" stroke-width="5.5"/>
+    <path d="M74 36L64 42" stroke-width="5.5"/>
+    <path d="M74 64L64 58" stroke-width="5.5"/>
+    <path d="M50 78V66" stroke-width="5.5" opacity=".42"/>
+    <path d="M26 64L36 58" stroke-width="5.5" opacity=".42"/>
+    <path d="M26 36L36 42" stroke-width="5.5" opacity=".42"/>
+    <circle cx="50" cy="22" r="5.5" fill="currentColor" stroke="none"/>
+    <circle cx="74" cy="36" r="5.5" fill="currentColor" stroke="none"/>
+    <circle cx="74" cy="64" r="5.5" fill="currentColor" stroke="none"/>
+  </g>
+</svg>

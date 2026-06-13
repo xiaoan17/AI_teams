@@ -4,6 +4,23 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const { createTmuxViewManager, runTmuxAsync } = require("./tmux-view.cjs");
+const {
+  parseTmuxAgentPaneTable,
+  parseTmuxPaneTable,
+  parseTmuxSessionWindows,
+  reconcileRuntimePanesFromTable: reconcileRuntimePanes
+} = require("./tmux-runtime.cjs");
+const agentDetect = require("./agent-detect.cjs");
+const { killProcessTree } = require("./process-tree.cjs");
+const { initLogger, scoped } = require("./logger.cjs");
+
+// Scoped loggers. Safe to create before initLogger(); electron-log buffers
+// early messages and flushes them once transports are configured.
+const log = scoped("main");
+const logDocs = scoped("documents");
+const logReap = scoped("reap");
+const logTmux = scoped("tmux");
+const logRoute = scoped("route");
 
 const APP_ROOT = path.resolve(__dirname, "..", "..");
 const APP_ICON_PATH = path.join(APP_ROOT, "public", "app-icon.png");
@@ -13,12 +30,43 @@ if (!process.env.AITEAMS_USER_DATA_PATH) {
 } else {
   app.setPath("userData", path.resolve(process.env.AITEAMS_USER_DATA_PATH));
 }
-const DEFAULT_WORKSPACE_ROOT = path.resolve(process.env.AITEAMS_WORKSPACE_ROOT || APP_ROOT);
+function isRunningFromAppBundle() {
+  return process.execPath.includes(".app/Contents/MacOS/");
+}
+
+function defaultWorkspaceRoot() {
+  if (process.env.AITEAMS_WORKSPACE_ROOT) {
+    return path.resolve(process.env.AITEAMS_WORKSPACE_ROOT);
+  }
+  if (app.isPackaged || isRunningFromAppBundle()) {
+    return path.join(app.getPath("userData"), "workspace");
+  }
+  return APP_ROOT;
+}
+
+const DEFAULT_WORKSPACE_ROOT = defaultWorkspaceRoot();
 const MAX_RECENT_WORKSPACES = 10;
 const STATUS_BUFFER_CHARS = 12000;
 const TERMINAL_REPLAY_BUFFER_CHARS = 750000;
 const TERMINAL_SNAPSHOT_LINES = 2000;
 const TMUX_RECONCILE_INTERVAL_MS = 5000;
+const COMMON_EXECUTABLE_DIRS = [
+  "/opt/homebrew/bin",
+  "/usr/local/bin",
+  "/usr/bin",
+  "/bin",
+  "/usr/sbin",
+  "/sbin",
+  path.join(os.homedir(), "bin"),
+  path.join(os.homedir(), ".local", "bin"),
+  path.join(os.homedir(), ".cargo", "bin"),
+  path.join(os.homedir(), ".bun", "bin"),
+  path.join(os.homedir(), ".deno", "bin"),
+  path.join(os.homedir(), ".npm-global", "bin"),
+  path.join(os.homedir(), ".volta", "bin"),
+  path.join(os.homedir(), ".kimi-code", "bin"),
+  path.join(os.homedir(), ".claude", "local")
+];
 let WORKSPACE_ROOT = DEFAULT_WORKSPACE_ROOT;
 let AITEAM_DIR = "";
 let WORKSPACE_CONFIG_PATH = "";
@@ -56,6 +104,68 @@ let mainWindow = null;
 let nodePty = null;
 let documentsWatcher = null;
 let documentsChangeTimer = null;
+let cachedLoginShellPath = null;
+
+function splitPathList(value) {
+  return String(value || "")
+    .split(path.delimiter)
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+}
+
+function existingExecutableDirs(entries) {
+  const seen = new Set();
+  return entries.filter((entry) => {
+    const resolved = path.resolve(entry);
+    if (seen.has(resolved)) {
+      return false;
+    }
+    seen.add(resolved);
+    try {
+      return fs.statSync(resolved).isDirectory();
+    } catch (_error) {
+      return false;
+    }
+  });
+}
+
+function readLoginShellPath() {
+  if (cachedLoginShellPath !== null) {
+    return cachedLoginShellPath;
+  }
+  cachedLoginShellPath = "";
+  const shellPath = String(process.env.SHELL || "/bin/zsh");
+  if (!path.isAbsolute(shellPath) || !fs.existsSync(shellPath)) {
+    return cachedLoginShellPath;
+  }
+  try {
+    cachedLoginShellPath = execFileSync(shellPath, ["-lc", "printf %s \"$PATH\""], {
+      encoding: "utf8",
+      timeout: 1500,
+      env: { ...process.env }
+    });
+  } catch (_error) {
+    cachedLoginShellPath = "";
+  }
+  return cachedLoginShellPath;
+}
+
+function executableSearchDirs() {
+  return existingExecutableDirs([
+    ...splitPathList(process.env.PATH),
+    ...splitPathList(readLoginShellPath()),
+    ...COMMON_EXECUTABLE_DIRS
+  ]);
+}
+
+function ensureDesktopSearchPath() {
+  const dirs = executableSearchDirs();
+  if (dirs.length) {
+    process.env.PATH = dirs.join(path.delimiter);
+  }
+}
+
+ensureDesktopSearchPath();
 
 function setWorkspaceRoot(root) {
   WORKSPACE_ROOT = path.resolve(root);
@@ -220,6 +330,36 @@ function normalizeCodexAgent(agent) {
   };
 }
 
+function resolveExecutableCommand(command) {
+  const value = String(command || "").trim();
+  if (!value) {
+    return "";
+  }
+  if (value.includes("/")) {
+    const resolved = path.isAbsolute(value) ? value : path.resolve(WORKSPACE_ROOT, value);
+    try {
+      fs.accessSync(resolved, fs.constants.X_OK);
+      return resolved;
+    } catch (_error) {
+      return "";
+    }
+  }
+  for (const dir of executableSearchDirs()) {
+    const candidate = path.join(dir, value);
+    try {
+      fs.accessSync(candidate, fs.constants.X_OK);
+      return candidate;
+    } catch (_error) {
+      // Keep searching the remaining PATH entries.
+    }
+  }
+  return "";
+}
+
+function agentRuntimeCommand(agent) {
+  return resolveExecutableCommand(agent.command) || agent.command;
+}
+
 function slugify(value) {
   const slug = String(value || "")
     .trim()
@@ -312,6 +452,7 @@ function normalizeAgentConfig(config, sourceRoot = null) {
     const next = {
       ...agent,
       id,
+      type: String(agent.type || agent.id || id).trim(),
       name: agent.name || id,
       command: agent.command || id,
       args: Array.isArray(agent.args) ? agent.args : []
@@ -366,7 +507,7 @@ function loadAppAgentConfig() {
   const configPath = appAgentConfigPath();
   const existing = readJson(configPath, null);
   if (existing) {
-    const normalized = normalizeAgentConfig(existing);
+    const normalized = mergeDiscoveredLocalAgents(normalizeAgentConfig(existing));
     writeJson(configPath, normalized);
     return normalized;
   }
@@ -374,16 +515,20 @@ function loadAppAgentConfig() {
   const legacyPath = legacyAppAgentConfigPath();
   const legacy = legacyPath ? readJson(legacyPath, null) : null;
   if (legacy) {
-    const config = isLegacyDefaultAgentConfig(legacy) ? defaultAppAgentConfig() : normalizeAgentConfig(legacy);
+    const config = mergeDiscoveredLocalAgents(
+      isLegacyDefaultAgentConfig(legacy) ? defaultAppAgentConfig() : normalizeAgentConfig(legacy)
+    );
     writeJson(configPath, config);
     return config;
   }
 
   const migrated = readJson(appRootAgentConfigPath(), null);
   const normalizedMigrated = migrated ? normalizeAgentConfig(migrated, APP_ROOT) : null;
-  const config = normalizedMigrated?.agents.some((agent) => agent.enabled !== false)
-    ? normalizedMigrated
-    : defaultAppAgentConfig();
+  const config = mergeDiscoveredLocalAgents(
+    normalizedMigrated?.agents.some((agent) => agent.enabled !== false)
+      ? normalizedMigrated
+      : defaultAppAgentConfig()
+  );
   writeJson(configPath, config);
   return config;
 }
@@ -400,34 +545,66 @@ function prepareWorkspaceRoot(root) {
 
 function builtinAgentPresets() {
   return [
-    { id: "codex", name: "Codex", command: "codex", args: mergeArgs(["--no-alt-screen"], defaultCodexArgs()), cwd: ".", enabled: true, provider: "openai", permission_mode: "configure-before-start" },
-    { id: "claude", name: "Claude Code", command: "claude", args: [], cwd: ".", enabled: true, provider: "anthropic", permission_mode: "configure-before-start" },
-    { id: "kimi", name: "Kimi", command: "kimi", args: [], cwd: ".", enabled: true, provider: "moonshot", permission_mode: "configure-before-start" },
-    { id: "gemini", name: "Gemini CLI", command: "gemini", args: [], cwd: ".", enabled: true, provider: "google", permission_mode: "configure-before-start" }
+    { id: "codex", name: "Codex", command: "codex", args: mergeArgs(["--no-alt-screen"], defaultCodexArgs()), cwd: ".", enabled: true, provider: "openai", permission_mode: "configure-before-start", versionArgs: ["--version"], docUrl: "https://github.com/openai/codex" },
+    { id: "claude", name: "Claude Code", command: "claude", args: [], cwd: ".", enabled: true, provider: "anthropic", permission_mode: "configure-before-start", versionArgs: ["--version"], docUrl: "https://docs.claude.com/claude-code" },
+    { id: "kimi", name: "Kimi", command: "kimi", args: [], cwd: ".", enabled: true, provider: "moonshot", permission_mode: "configure-before-start", versionArgs: ["--version"], docUrl: "https://platform.moonshot.cn" },
+    { id: "gemini", name: "Gemini CLI", command: "gemini", args: [], cwd: ".", enabled: true, provider: "google", permission_mode: "configure-before-start", versionArgs: ["--version"], docUrl: "https://github.com/google-gemini/gemini-cli" }
   ];
 }
 
 function commandAvailable(command) {
-  const value = String(command || "").trim();
-  if (!value) {
-    return false;
+  return Boolean(resolveExecutableCommand(command));
+}
+
+// Detection helpers live in a standalone, Electron-free module so they can be unit-tested
+// (scripts/agent-detect-smoke.cjs). We inject the main-process PATH helpers here.
+function detectAllAgentTypes() {
+  return agentDetect.detectAllAgentTypes(builtinAgentPresets(), {
+    resolveExecutableCommand,
+    searchDirs: executableSearchDirs,
+    runVersion: agentDetect.defaultRunVersion
+  });
+}
+
+function discoveredBuiltinAgents() {
+  return builtinAgentPresets()
+    .filter((preset) => commandAvailable(preset.command))
+    .map((preset) => normalizeCodexAgent({
+      ...agentDetect.presetToAgentTemplate(preset),
+      type: preset.id,
+      auto_discovered: true
+    }));
+}
+
+// Seed a default agent only when the config has no agents yet (first run). Once the user
+// has any configured agents, leave composition to them — auto-appending every detected
+// CLI would otherwise fight the MAX_AGENTS limit and the "free composition" model.
+function mergeDiscoveredLocalAgents(config) {
+  const existingAgents = Array.isArray(config.agents) ? config.agents : [];
+  if (existingAgents.length) {
+    return config;
   }
-  if (value.includes("/")) {
-    const resolved = path.isAbsolute(value) ? value : path.resolve(WORKSPACE_ROOT, value);
-    return fs.existsSync(resolved);
+  const discovered = discoveredBuiltinAgents();
+  if (!discovered.length) {
+    return config;
   }
-  const entries = String(process.env.PATH || "").split(path.delimiter).filter(Boolean);
-  return entries.some((dir) => {
-    try {
-      fs.accessSync(path.join(dir, value), fs.constants.X_OK);
-      return true;
-    } catch {
-      return false;
-    }
+  const seed = discovered[0];
+  return normalizeAgentConfig({
+    ...config,
+    routing: {
+      ...(config.routing || {}),
+      default_agent: config.routing?.default_agent || seed.id
+    },
+    agents: [seed]
   });
 }
 
 const AGENT_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+
+// Upper bound on how many agents may be configured in agents.json at once. The terminal
+// layout tops out at 3 panes, so this keeps the configuration aligned with what the UI
+// can display side by side.
+const MAX_AGENTS = 3;
 
 function validateImportedAgentDraft(draft, takenIds) {
   const errors = [];
@@ -443,7 +620,19 @@ function validateImportedAgentDraft(draft, takenIds) {
   } else if (takenIds.has(id)) {
     errors.push(`Agent id "${id}" already exists.`);
   }
-  const command = String(draft.command || "").trim();
+  // Optional type points at a known preset. When present it lets a draft inherit the
+  // command/args/provider of that type so the UI can build an instance from a bare pick.
+  const type = String(draft.type || "").trim();
+  const presetForType = type
+    ? builtinAgentPresets().find((preset) => preset.id === type)
+    : null;
+  if (type && !presetForType) {
+    warnings.push(`Unknown agent type "${type}"; keeping it but not inheriting any preset defaults.`);
+  }
+  let command = String(draft.command || "").trim();
+  if (!command && presetForType) {
+    command = String(presetForType.command || "").trim();
+  }
   if (!command) {
     errors.push("Missing required field: command.");
   }
@@ -454,6 +643,8 @@ function validateImportedAgentDraft(draft, takenIds) {
     } else {
       args = draft.args;
     }
+  } else if (presetForType && Array.isArray(presetForType.args)) {
+    args = presetForType.args;
   }
   let cwd = ".";
   if (draft.cwd !== undefined && draft.cwd !== null) {
@@ -473,15 +664,22 @@ function validateImportedAgentDraft(draft, takenIds) {
   const agent = {
     ...draft,
     id,
-    name: String(draft.name || id),
+    type: type || id,
+    name: String(draft.name || presetForType?.name || id),
     command,
     args,
     cwd,
     enabled: draft.enabled === undefined ? true : Boolean(draft.enabled)
   };
+  if (!agent.provider && presetForType?.provider) {
+    agent.provider = presetForType.provider;
+  }
   if (!agent.permission_mode) {
     agent.permission_mode = "configure-before-start";
   }
+  // versionArgs/docUrl are detection-only hints and must not leak into persisted configs.
+  delete agent.versionArgs;
+  delete agent.docUrl;
   return { agent, errors, warnings };
 }
 
@@ -522,11 +720,21 @@ function importAgents(payload, options = {}) {
     errors: result.errors
   }));
   const hasErrors = results.some((result) => result.errors.length);
+  // The limit is on the total number of configured agents, counting both what already
+  // exists and what this batch would add.
+  const projected = config.agents.length + results.length;
+  const overLimit = projected > MAX_AGENTS;
+  const limitError = overLimit
+    ? `最多配置 ${MAX_AGENTS} 个 agent（当前 ${config.agents.length}，本次新增 ${results.length}）。`
+    : null;
   if (options.dryRun) {
-    return { ok: !hasErrors, dryRun: true, agents: reviewAgents };
+    return { ok: !hasErrors && !overLimit, dryRun: true, agents: reviewAgents, limitError };
   }
   if (hasErrors) {
     throw new Error(results.flatMap((result) => result.errors).join(" "));
+  }
+  if (overLimit) {
+    throw new Error(limitError);
   }
   loadAppAgentConfig(); // Ensures the config file exists before we append.
   const configPath = appAgentConfigPath();
@@ -537,6 +745,43 @@ function importAgents(payload, options = {}) {
   rawConfig.agents = [...baseAgents, ...results.map((result) => result.agent)];
   writeJson(configPath, rawConfig);
   return { ok: true, agents: reviewAgents, imported: results.map((result) => result.agent.id) };
+}
+
+// Remove an agent instance from the configuration. Stops it first if running, drops it
+// from agents.json, and repairs the default_agent pointer if it referenced the removed
+// agent. This is what lets a user at the 3-agent limit make room for a different mix.
+function removeAgent(agentId) {
+  if (loadWorkspaceDemoConfig()) {
+    throw new Error("Editing agents is disabled in the demo workspace.");
+  }
+  const id = String(agentId || "").trim();
+  if (!id) {
+    throw new Error("Missing agent id.");
+  }
+  const config = loadConfig();
+  if (!config.agents.some((agent) => agent.id === id)) {
+    throw new Error(`Agent "${id}" was not found.`);
+  }
+  // Best-effort stop so we don't leave an orphaned pty/tmux pane behind.
+  try {
+    stopAgent(id);
+  } catch (_error) {
+    // The agent may already be stopped or never started; removal proceeds regardless.
+  }
+  loadAppAgentConfig(); // Ensure the config file exists before we rewrite it.
+  const configPath = appAgentConfigPath();
+  const rawConfig = readJson(configPath, null) || defaultAppAgentConfig();
+  const baseAgents = Array.isArray(rawConfig.agents) ? rawConfig.agents : config.agents;
+  const remaining = baseAgents.filter((agent) => agent.id !== id);
+  rawConfig.agents = remaining;
+  if (rawConfig.routing?.default_agent === id) {
+    rawConfig.routing = {
+      ...rawConfig.routing,
+      default_agent: remaining[0]?.id || ""
+    };
+  }
+  writeJson(configPath, rawConfig);
+  return { ok: true, removed: id, remaining: remaining.map((agent) => agent.id) };
 }
 
 function workspaceName(root) {
@@ -680,11 +925,11 @@ function startDocumentsWatcher() {
   try {
     documentsWatcher = fs.watch(DOCS_DIR, { recursive: true }, scheduleDocumentsChanged);
     documentsWatcher.on("error", (error) => {
-      console.warn(`documents watcher failed: ${error.message}`);
+      logDocs.warn("documents watcher failed", { dir: DOCS_DIR, error });
       stopDocumentsWatcher();
     });
   } catch (error) {
-    console.warn(`documents watcher failed: ${error.message}`);
+    logDocs.warn("documents watcher failed", { dir: DOCS_DIR, error });
   }
 }
 
@@ -967,7 +1212,7 @@ function shellQuote(value) {
 
 function agentShellCommand(agent) {
   const args = Array.isArray(agent.args) ? agent.args : [];
-  return [agent.command, ...args].filter(Boolean).map(shellQuote).join(" ");
+  return [agentRuntimeCommand(agent), ...args].filter(Boolean).map(shellQuote).join(" ");
 }
 
 function directAgentPublicState(agent) {
@@ -1035,7 +1280,7 @@ function directStartAgent(agentId) {
   const args = Array.isArray(agent.args) ? agent.args : [];
   let ptyProcess;
   try {
-    ptyProcess = getNodePty().spawn(agent.command, args, {
+    ptyProcess = getNodePty().spawn(agentRuntimeCommand(agent), args, {
       name: "xterm-256color",
       cols: 96,
       rows: 28,
@@ -1108,8 +1353,16 @@ function directStopAgent(agentId) {
   if (!state?.ptyProcess) {
     return;
   }
+  const pid = state.ptyProcess.pid;
   state.ptyProcess.kill();
   state.ptyProcess = null;
+  // Reap any helper/MCP children the CLI forked that escaped the pty's signal.
+  // Best-effort and async; the pty itself is already down.
+  if (Number.isInteger(pid) && pid > 1) {
+    killProcessTree(pid).catch((error) => {
+      logReap.warn("direct-pty process-tree reap failed", { agentId, pid, error });
+    });
+  }
   state.status = "stopped";
   state.reason = "stopped by user";
   persistStatusForState(agentId, state);
@@ -1212,6 +1465,61 @@ function tmuxPaneDead(pane) {
     return null;
   }
   return value === "1";
+}
+
+function tmuxPanePid(pane) {
+  const value = tmuxPaneField(pane, "#{pane_pid}");
+  const pid = Number(value);
+  return Number.isInteger(pid) && pid > 1 ? pid : null;
+}
+
+// Reclaim the full process tree behind a tmux pane before we discard the pane
+// itself. tmux's own kill only HUPs the pane's foreground process; agent CLIs
+// fork MCP servers / helpers that escape that signal, so we walk the PID
+// lineage from #{pane_pid} and reap it directly. Best-effort: a missing pid
+// (pane already gone) is not an error.
+async function reapPaneProcessTree(pane) {
+  if (!pane) {
+    return;
+  }
+  const pid = tmuxPanePid(pane);
+  if (!pid) {
+    return;
+  }
+  try {
+    const result = await killProcessTree(pid);
+    if (!result.ok) {
+      logReap.warn("process-tree reap incomplete", { pane, pid, reason: result.reason });
+    }
+  } catch (error) {
+    logReap.warn("process-tree reap failed", { pane, pid, error });
+  }
+}
+
+// Reap the process trees of every live pane in a base session. Used before
+// kill-session (Stop All) and before quit, so no agent CLI outlives the app.
+async function reapBaseSessionProcessTrees(session) {
+  if (!session || !tmuxHasSession(session)) {
+    return;
+  }
+  const result = runTmux(
+    ["list-panes", "-s", "-t", session, "-F", "#{pane_pid}"],
+    { check: false }
+  );
+  if (result.status !== 0) {
+    return;
+  }
+  const pids = result.stdout
+    .split("\n")
+    .map((line) => Number(line.trim()))
+    .filter((pid) => Number.isInteger(pid) && pid > 1);
+  for (const pid of pids) {
+    try {
+      await killProcessTree(pid);
+    } catch (error) {
+      logReap.warn("process-tree reap failed", { session, pid, error });
+    }
+  }
 }
 
 function tmuxCapturePane(pane, lines = TERMINAL_SNAPSHOT_LINES) {
@@ -1431,7 +1739,7 @@ const tmuxViews = createTmuxViewManager({
         emitTmuxStatusIfChanged(agentId, publicState);
       }
     } catch (error) {
-      console.warn(`Failed to infer tmux status for ${agentId}: ${error.message}`);
+      logTmux.warn("failed to infer tmux status", { agentId, error });
     }
   },
   onViewState: (agentId, event) => {
@@ -1450,37 +1758,29 @@ const tmuxViews = createTmuxViewManager({
         emitTmuxStatusIfChanged(agentId, publicState, { force: event.state !== "attached" });
       }
     } catch (error) {
-      console.warn(`Failed to publish tmux view state for ${agentId}: ${error.message}`);
+      logTmux.warn("failed to publish tmux view state", { agentId, error });
     }
   }
 });
 
-function parseTmuxPaneTable(stdout) {
-  const panes = new Map();
-  for (const line of String(stdout || "").split("\n")) {
-    if (!line.trim()) {
-      continue;
-    }
-    const [pane, dead, windowId] = line.split("\t");
-    if (pane) {
-      panes.set(pane, { dead: dead === "1", windowId });
-    }
+function reconcileRuntimePanesFromTable(config, runtime, panesByAgentId) {
+  const { runtime: nextRuntime, changed } = reconcileRuntimePanes(config, runtime, panesByAgentId, { now: nowIso });
+  if (changed) {
+    saveRuntime(nextRuntime);
   }
-  return panes;
+  return nextRuntime;
 }
 
-function parseTmuxSessionWindows(stdout) {
-  const sessions = new Map();
-  for (const line of String(stdout || "").split("\n")) {
-    if (!line.trim()) {
-      continue;
-    }
-    const [sessionName, windowId] = line.split("\t");
-    if (sessionName) {
-      sessions.set(sessionName, windowId);
-    }
+async function recoverTmuxRuntimePanes(config, runtime) {
+  const session = runtimeSession(config);
+  const panesResult = await runTmuxAsync(
+    ["list-panes", "-s", "-t", session, "-F", "#{pane_id}\t#{pane_dead}\t#{window_name}"],
+    { check: false }
+  );
+  if (panesResult.status !== 0) {
+    return runtime;
   }
-  return sessions;
+  return reconcileRuntimePanesFromTable(config, runtime, parseTmuxAgentPaneTable(panesResult.stdout));
 }
 
 async function destroyTmuxViewSessionsForBase(baseSession) {
@@ -1547,10 +1847,12 @@ async function reconcileTmuxBackend() {
 
     const runtime = normalizeRuntime(readRuntime(), session);
     const panesResult = await runTmuxAsync(
-      ["list-panes", "-s", "-t", session, "-F", "#{pane_id}\t#{pane_dead}\t#{window_id}"],
+      ["list-panes", "-s", "-t", session, "-F", "#{pane_id}\t#{pane_dead}\t#{window_id}\t#{window_name}"],
       { check: false }
     );
     const panes = parseTmuxPaneTable(panesResult.stdout);
+    const panesByAgentId = parseTmuxAgentPaneTable(panesResult.stdout);
+    reconcileRuntimePanesFromTable(config, runtime, panesByAgentId);
     const sessionsResult = await runTmuxAsync(["list-sessions", "-F", "#{session_name}\t#{window_id}"], { check: false });
     const sessionWindows = parseTmuxSessionWindows(sessionsResult.stdout);
 
@@ -1583,7 +1885,7 @@ async function reconcileTmuxBackend() {
         try {
           await ensureTmuxViewForAgent(agent, config, runtime, panes);
         } catch (error) {
-          console.warn(`Failed to attach tmux view for ${agent.id}: ${error.message}`);
+          logTmux.warn("failed to attach tmux view", { agentId: agent.id, error });
           emitTmuxStatusIfChanged(agent.id, {
             ...tmuxAgentPublicState(agent, { config, runtime, dead: false, capture: "" }),
             status: "error",
@@ -1605,7 +1907,7 @@ async function reconcileTmuxBackend() {
       );
     }
   } catch (error) {
-    console.warn(`tmux reconcile failed: ${error.message}`);
+    logTmux.warn("tmux reconcile failed", { error });
   } finally {
     tmuxReconcileInFlight = false;
   }
@@ -1631,7 +1933,16 @@ function stopTmuxReconcile() {
 function tmuxListAgentStates() {
   const config = loadConfig();
   ensureTmuxReconcile();
-  const runtime = readRuntime();
+  let runtime = readRuntime();
+  if (tmuxHasSession(runtimeSession(config))) {
+    const panesResult = runTmux(
+      ["list-panes", "-s", "-t", runtimeSession(config), "-F", "#{pane_id}\t#{pane_dead}\t#{window_name}"],
+      { check: false }
+    );
+    if (panesResult.status === 0) {
+      runtime = reconcileRuntimePanesFromTable(config, normalizeRuntime(runtime, runtimeSession(config)), parseTmuxAgentPaneTable(panesResult.stdout));
+    }
+  }
   return config.agents.map((agent) => {
     const publicState = tmuxAgentPublicState(agent, {
       config,
@@ -1712,21 +2023,28 @@ async function tmuxStopAgent(agentId) {
   const pane = runtime.agents?.[agentId]?.pane;
   await destroyTmuxViewSessionForAgent(config, agentId);
   if (pane) {
+    // Reap the agent's process tree first, then drop the pane shell.
+    await reapPaneProcessTree(pane);
     runTmux(["kill-pane", "-t", pane], { check: false });
   }
+  // Confirm the pane is actually gone before we report stopped, so the UI never
+  // shows "stopped" over a process that survived.
+  const paneLingers = pane ? tmuxPaneDead(pane) === false : false;
   runtime.agents = runtime.agents || {};
   runtime.agents[agentId] = {
     ...(runtime.agents[agentId] || {}),
     pane: null,
     stopped: true,
-    reason: "stopped by user",
+    reason: paneLingers ? "stop requested; pane still alive" : "stopped by user",
     stopped_at: nowIso()
   };
   saveRuntime(runtime);
   const status = {
     ...tmuxAgentPublicState(agent, { config, runtime }),
-    status: "stopped",
-    reason: "stopped by user",
+    status: paneLingers ? "error" : "stopped",
+    reason: paneLingers
+      ? `Stop requested but tmux pane is still alive: ${pane}`
+      : "stopped by user",
     updatedAt: nowIso()
   };
   persistStatus(agentId, status);
@@ -1740,6 +2058,9 @@ async function tmuxStopAllAgents() {
   await tmuxViews.destroyAll();
   await destroyTmuxViewSessionsForBase(session);
   if (tmuxHasSession(session)) {
+    // Reap every pane's process tree before tearing down the session, so CLI
+    // helpers that escaped tmux's signal are reclaimed too.
+    await reapBaseSessionProcessTrees(session);
     runTmux(["kill-session", "-t", session], { check: false });
   }
   stopTmuxReconcile();
@@ -1779,6 +2100,24 @@ async function tmuxPasteTextFallback(pane, text) {
   }
 }
 
+function tmuxWriteInputFallback(agentId, data) {
+  const pane = readRuntime().agents?.[agentId]?.pane;
+  if (!pane || tmuxPaneDead(pane) !== false) {
+    throw new Error(`Agent is not running: ${agentId}`);
+  }
+  const text = String(data || "");
+  if (!text) {
+    return;
+  }
+  const bufferName = `aiteam-input-${process.pid}-${Date.now()}`;
+  try {
+    runTmux(["load-buffer", "-b", bufferName, "-"], { input: text });
+    runTmux(["paste-buffer", "-b", bufferName, "-t", pane, "-p"]);
+  } finally {
+    runTmux(["delete-buffer", "-b", bufferName], { check: false });
+  }
+}
+
 function normalizeInjectionProbeText(value) {
   return String(value || "")
     .replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, "")
@@ -1795,7 +2134,18 @@ function injectionProbeNeedle(text) {
 }
 
 function tmuxWriteInput(agentId, data) {
-  tmuxViews.write(agentId, data);
+  if (!tmuxViews.isAttached(agentId)) {
+    tmuxWriteInputFallback(agentId, data);
+    return;
+  }
+  try {
+    tmuxViews.write(agentId, data);
+  } catch (error) {
+    if (!/Agent is not running/i.test(error.message || "")) {
+      throw error;
+    }
+    tmuxWriteInputFallback(agentId, data);
+  }
 }
 
 function tmuxResizeAgent(agentId, cols, rows) {
@@ -1898,7 +2248,7 @@ function tmuxPublicState(agentId) {
 
 async function tmuxPreflightRoute(targets) {
   const config = loadConfig();
-  const runtime = readRuntime();
+  let runtime = readRuntime();
   const session = runtimeSession(config);
   const hasSession = await runTmuxAsync(["has-session", "-t", session], { check: false });
   if (hasSession.status !== 0) {
@@ -1906,9 +2256,10 @@ async function tmuxPreflightRoute(targets) {
   }
 
   const paneList = await runTmuxAsync(
-    ["list-panes", "-s", "-t", session, "-F", "#{pane_id}\t#{pane_dead}"],
+    ["list-panes", "-s", "-t", session, "-F", "#{pane_id}\t#{pane_dead}\t#{window_name}"],
     { check: false }
   );
+  runtime = reconcileRuntimePanesFromTable(config, normalizeRuntime(runtime, session), parseTmuxAgentPaneTable(paneList.stdout));
   const paneStates = new Map();
   for (const line of paneList.stdout.split("\n")) {
     if (!line.trim()) {
@@ -1937,6 +2288,7 @@ async function tmuxPreflightRoute(targets) {
       `Cannot send broadcast. Not running: ${failures.join("; ")}. Start the agent or disable it.`
     );
   }
+  return runtime;
 }
 
 async function verifyTmuxInjection(agentId, pane, message) {
@@ -1951,10 +2303,10 @@ async function verifyTmuxInjection(agentId, pane, message) {
       const result = await runTmuxAsync(["capture-pane", "-p", "-e", "-J", "-S", "-80", "-t", pane], { check: false });
       verified = result.status === 0 && normalizeInjectionProbeText(result.stdout).includes(needle);
     } catch (error) {
-      console.warn(`tmux route verify failed for ${agentId}: ${error.message}`);
+      logRoute.warn("tmux route verify failed", { agentId, pane, error });
     }
     if (!verified) {
-      console.warn(`tmux route verify did not find injected text for ${agentId}`);
+      logRoute.warn("tmux route verify did not find injected text", { agentId, pane });
     }
     emit("route:verify", { id: agentId, verified });
   }, 500);
@@ -1962,7 +2314,7 @@ async function verifyTmuxInjection(agentId, pane, message) {
 
 async function tmuxPasteAndSubmitAgent(agentId, message) {
   const config = loadConfig();
-  const runtime = readRuntime();
+  const runtime = await recoverTmuxRuntimePanes(config, normalizeRuntime(readRuntime(), runtimeSession(config)));
   const pane = runtime.agents?.[agentId]?.pane;
   if (!pane) {
     throw new Error(`Agent is not running: ${agentId}`);
@@ -2087,6 +2439,13 @@ async function releaseCurrentWorkspaceBackend() {
     await tmuxViews.reset();
     if (session) {
       await destroyTmuxViewSessionsForBase(session);
+      // Reap agent process trees and tear down the base session so no CLI (and
+      // none of its escaped MCP/helper children) outlives the workspace. This
+      // runs on both workspace switch and app quit.
+      await reapBaseSessionProcessTrees(session);
+      if (tmuxHasSession(session)) {
+        runTmux(["kill-session", "-t", session], { check: false });
+      }
     }
   }
 }
@@ -2369,6 +2728,7 @@ function createWindow() {
 }
 
 app.whenReady().then(() => {
+  initLogger(app);
   const preparedRoot = prepareWorkspaceRoot(WORKSPACE_ROOT);
   if (preparedRoot !== WORKSPACE_ROOT) {
     setWorkspaceRoot(preparedRoot);
@@ -2394,7 +2754,7 @@ app.on("before-quit", (event) => {
   backendReleaseBeforeQuit = true;
   stopDocumentsWatcher();
   releaseCurrentWorkspaceBackend()
-    .catch((error) => console.warn(`backend release before quit failed: ${error.message}`))
+    .catch((error) => log.warn("backend release before quit failed", { error }))
     .finally(() => app.quit());
 });
 
@@ -2404,7 +2764,9 @@ ipcMain.handle("workspace:choose", () => chooseWorkspace());
 
 ipcMain.handle("agents:list", () => listAgentStates());
 ipcMain.handle("agents:presets", () => builtinAgentPresets());
+ipcMain.handle("agents:detect", () => detectAllAgentTypes());
 ipcMain.handle("agents:import", (_event, payload, options = {}) => importAgents(payload, options));
+ipcMain.handle("agents:remove", (_event, agentId) => removeAgent(agentId));
 ipcMain.handle("agents:snapshot", (_event, agentId) => agentTerminalSnapshot(agentId));
 ipcMain.handle("agents:start", (_event, agentId) => startAgent(agentId));
 ipcMain.handle("agents:stop", (_event, agentId) => stopAgent(agentId));
@@ -2418,3 +2780,11 @@ ipcMain.handle("documents:list", (_event, folder = "") => listDocuments(folder))
 ipcMain.handle("documents:togglePinned", (_event, relativePath) => toggleDocumentPinned(relativePath));
 ipcMain.handle("git:status", () => getGitStatus());
 ipcMain.handle("shell:openPath", (_event, targetPath) => shell.openPath(targetPath));
+ipcMain.handle("shell:openExternal", (_event, url) => {
+  const value = String(url || "");
+  if (!/^https?:\/\//i.test(value)) {
+    return false;
+  }
+  shell.openExternal(value);
+  return true;
+});

@@ -1,6 +1,6 @@
 ---
 created: 2026-06-12
-status: Proposal
+status: Partial
 state: todo
 tags: [design, less-is-more, ui-audit, refactor]
 source: 参考《少即是多：经久不衰的设计哲学》(Typora/Raw/20260610)
@@ -12,6 +12,13 @@ source: 参考《少即是多：经久不衰的设计哲学》(Typora/Raw/202606
 > 判断标准：如果一个元素拿掉后，表达没有变弱，它就是冗余；如果两个信号说同一件事却用不同词汇/颜色，它就是矛盾。
 
 本应用"第一眼要让人看到什么"的答案应该是唯一的：**各个 agent 现在的状态，以及谁需要我输入**。下面所有问题都用这个标准衡量。
+
+## 当前进展（2026-06-12）
+
+- 已完成：P3、P4、P5、P6、P7、P8、P10、P11、P12。
+- 产品决策保留：P1 的 Recent 下拉保留；P2 的最小化 agent 允许额外等待信号。
+- 暂缓：P13 字体 token、P14 色彩 token，后续单独作为设计系统收敛再讨论。
+- 待处理：P9 collapsed-brand 重复 DOM 属代码层清理，低优先。
 
 ---
 
@@ -25,8 +32,10 @@ source: 参考《少即是多：经久不衰的设计哲学》(Typora/Raw/202606
 
 **方案**：
 - Theme / Ambient effects 移入一个设置入口（brand 行右侧一个 ⚙ 图标按钮，弹出小菜单），或挂到 Electron 应用菜单。
-- Recent 合并进 Project 按钮：点击 Project 弹出菜单 = 最近项目列表 + "Choose folder..."，删掉常驻 `<select>`。
+- Recent 保留为常驻下拉。这是当前产品决策：切换项目的可发现性优先于继续压缩这一行。
 - 收益：侧边栏顶部从 5 行压缩到 2 行，Agents 列表上移到第一屏焦点位。
+
+**状态**：部分完成。Theme / Ambient effects 已下沉到设置入口；Recent 按当前决策保留。
 
 ### P2. Agent 状态有四套并行的视觉信号 🔴 高优先
 
@@ -45,6 +54,8 @@ source: 参考《少即是多：经久不衰的设计哲学》(Typora/Raw/202606
 - 终端卡片：status pill 作为唯一状态载体；呼吸光效只保留 **waiting_input 琥珀**这一种（它是真正需要用户行动的状态），删掉 working 绿色呼吸——"正在输出"在终端里本来就看得见，光效是重复表达。
 - 活跃卡片只保留 border 变色，去掉 focus glow（或合并进光效开关后默认关闭）。
 
+**状态**：已完成并保留一个例外。working 绿色呼吸已删除；waiting_input 琥珀呼吸保留；最小化 agent 的等待脉冲作为"隐藏面板需要用户输入"的额外信号保留。
+
 ### P3. 状态词表过多，且暴露内部诊断 🟡 中优先
 
 **现状**：8 种状态直接展示给用户：Stopped / Starting / Ready / Needs Input / Exited / Error / Missing Runtime / Pane Missing（`App.jsx:240-249`）。
@@ -52,6 +63,8 @@ source: 参考《少即是多：经久不衰的设计哲学》(Typora/Raw/202606
 **问题**：对用户有行动意义的只有 4 类：运行中、需要输入、已停止、出错了。"Pane Missing"、"Missing Runtime" 是排障信息，"Exited" 和 "Stopped" 对用户是同一件事（都得按 ▶ 重启）。词表越大，每个词的表达力越弱。
 
 **方案**：UI 显示收敛为 4 档（Running / Needs Input / Stopped / Error），原始状态放进 pill 的 `title` tooltip 供排障。`stoppedOrExited()` 的归类逻辑已经在这么做了，只差展示层跟上。
+
+**状态**：已完成。
 
 ---
 
@@ -72,6 +85,8 @@ source: 参考《少即是多：经久不衰的设计哲学》(Typora/Raw/202606
 - 黄− 改为真正的 toggle（最小化⇄恢复），不再有 muted 死态。
 - × 和 − 改为单色图标，**hover 该行时才显示**——这是行内操作按钮的成熟范式，平时整行只剩"圆点 + 名字"，状态色重新成为唯一的颜色信号。
 
+**状态**：已完成。
+
 ### P5. 文档行信息过载 🟡 中优先
 
 **现状**：每个文档行的 small 文字 = 状态徽章 + "Pinned ·" + 路径 + `toLocaleString()` 完整时间戳，右侧还常驻 +、★ 两个按钮（`App.jsx:456-485`）。
@@ -88,6 +103,8 @@ source: 参考《少即是多：经久不衰的设计哲学》(Typora/Raw/202606
 - +、★ 改 hover 显示；已 pin 的 ★ 保持常显（它此时是状态不是按钮）。
 - 删掉 "Pinned ·" 文本。
 
+**状态**：已完成。
+
 ### P6. 状态徽章无中生有 + 常驻三按钮过滤器 🟡 中优先
 
 **现状**：`documentStateLabel` 对没有 state 字段的文档**默认返回 "Todo"**（`App.jsx:332-337`），于是每一行都有彩色徽章；过滤器 All/Todo/Finish 三个按钮永久占一行（`App.jsx:1073-1085`）。
@@ -98,6 +115,8 @@ source: 参考《少即是多：经久不衰的设计哲学》(Typora/Raw/202606
 - 无 state 字段 → 不渲染徽章。让 "Finish" 徽章因稀缺而醒目。
 - 过滤器收进搜索框：聚焦搜索框时浮现，或做成搜索框右侧一个小下拉。
 
+**状态**：已完成。过滤器采用搜索框右侧的小下拉。
+
 ### P7. Composer 的重复与布局 hack 🟡 中优先
 
 **现状**：
@@ -107,8 +126,10 @@ source: 参考《少即是多：经久不衰的设计哲学》(Typora/Raw/202606
 
 **方案**：
 - 删掉 "Routes to" 常驻行；只在输入中**出现 @mention 时**于 textarea 上方浮现一行确认（此时它才携带新信息）。
-- Handoff 改为 textarea 内一个 📎/➕ 图标按钮：点击弹出文档选择，选中后显示一个可×掉的 chip。armed 状态天然可见，负边距 hack、`handoff-armed` 光效都可以删。
+- Handoff 改为 composer 顶行的 📎 图标按钮：点击弹出文档选择，选中后显示一个可×掉的 chip。armed 状态由 chip 表达，负边距 hack、`handoff-armed` 光效都可以删。
 - 顺带删掉 `composer-options` 的整套负边距布局。
+
+**状态**：已完成。
 
 ### P8. 终端头部暴露内部管线 🟢 低优先
 
@@ -118,11 +139,15 @@ source: 参考《少即是多：经久不衰的设计哲学》(Typora/Raw/202606
 
 **方案**：移入 agent 名字的 `title` tooltip；header 只留名字 + pill。
 
+**状态**：已完成。
+
 ### P9. collapsed-brand 重复 DOM 🟢 低优先
 
 **现状**：展开态 brand 和折叠态 collapsed-brand 是两套并存 DOM，靠 CSS 互相隐藏（`App.jsx:869-947`，`styles.css:726-759`）。
 
 **方案**：一套 DOM + CSS 控制显隐即可；属代码层冗余，顺手清理。
+
+**状态**：待处理，低优先。
 
 ---
 
@@ -139,6 +164,8 @@ source: 参考《少即是多：经久不衰的设计哲学》(Typora/Raw/202606
 
 **方案**：统一词表并写进文档：Start/Stop、Running、Docs（或 Files，二选一全局贯彻）；"Handoff" 改为 "Attach doc" 一类直白词。
 
+**状态**：已完成。
+
 ### P11. placeholder 暗示与实际路由矛盾 🔴 高优先（这是行为 bug 级矛盾）
 
 **现状**：没有活跃 agent 时 placeholder 显示 `"@all Ask the team..."`（`App.jsx:1215`），但此时 `mentionPreview` 返回 `[]`，Routes 行显示 "none"，发送时 targets 为空。
@@ -147,11 +174,15 @@ source: 参考《少即是多：经久不衰的设计哲学》(Typora/Raw/202606
 
 **方案**：二选一并对齐：要么无活跃 agent 时默认广播（placeholder 不变，路由逻辑补上 @all 默认值）；要么 placeholder 改为 "Mention an agent to send..."。推荐后者——隐式广播副作用大。
 
+**状态**：已完成，采用显式 mention 方案。
+
 ### P12. 红绿灯硬编码色违背主题架构承诺 🟡 中优先
 
 **现状**：`themes.js:3-7` 注释承诺"加主题预设永远不需要碰组件逻辑"，但 `#ff5f57 / #ffbd2e / #28c840` 直接硬编码在 `styles.css:463-474`，浅色主题下这三个色块不随主题变化。
 
 **方案**：若按 P4 把按钮单色化，此问题自动消失；否则至少收编为 token。
+
+**状态**：已完成，随 P4 单色化消失。
 
 ---
 
@@ -168,6 +199,8 @@ source: 参考《少即是多：经久不衰的设计哲学》(Typora/Raw/202606
 - 字重 3 档：400（正文）、600（强调）、800（标题/标签）。
 - 全局替换后视觉层级反而更清楚。
 
+**状态**：暂缓。需要结合截图验收单独讨论，不并入当前 UI 减法批次。
+
 ### P14. 语义色彩超载 🟡 中优先
 
 **现状**：除 accent/focus/success/warning/danger/stopped 六个语义色外，还有 doc-status / doc-finish / doc-todo / pinned-border / notice 等平行色组（`themes.js`），加上 P12 的三个硬编码色，一个界面同时存在 10+ 种有含义的颜色。
@@ -178,6 +211,8 @@ source: 参考《少即是多：经久不衰的设计哲学》(Typora/Raw/202606
 - `doc-finish` → 直接用 `success`；`doc-todo` → `warning`；`doc-status` → `focus`；`pinned-*` → 由 `accent` 派生（color-mix）。
 - 主题文件每个预设从 30 个 token 砍到 ~20 个，三套主题同步受益。
 - 最终色彩纪律：**accent（品牌/pin）+ focus（交互/选中）+ success/warning/danger（状态三色）+ 中性灰阶**，不再有第二套。
+
+**状态**：暂缓。部分颜色语义已自然收敛，但 token 系统是否继续压缩需单独讨论。
 
 ---
 

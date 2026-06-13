@@ -295,7 +295,7 @@ button {
 .workspace-picker select:hover,
 .document-search input:hover,
 .document-search select:hover,
-.composer-topline select:hover,
+.attach-doc-button:hover,
 .sidebar-bulk-actions button:hover,
 .panel-action:hover,
 .modal-button:hover,
@@ -510,6 +510,17 @@ button {
   color: var(--danger);
 }
 
+.agent-remove {
+  font-size: 11px;
+  opacity: 0.7;
+}
+
+.agent-remove:hover {
+  border-color: var(--danger);
+  color: var(--danger);
+  opacity: 1;
+}
+
 .disabled-label {
   display: grid;
   place-items: center;
@@ -540,7 +551,7 @@ button {
 
 .document-search input,
 .document-search select,
-.composer-topline select {
+.doc-picker-search {
   min-width: 0;
   border: 1px solid var(--border);
   border-radius: 7px;
@@ -565,8 +576,13 @@ button {
 
 .document-search input:focus,
 .document-search select:focus,
-.composer-topline select:focus {
+.doc-picker-search:focus,
+.attach-doc-button:focus-visible,
+.attachment-chip button:focus-visible,
+.doc-picker-option:focus-visible {
   border-color: var(--focus);
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
 }
 
 .document-search input::placeholder {
@@ -999,10 +1015,6 @@ button {
   }
 }
 
-.app-shell.effects-on .handoff-armed select {
-  border-color: color-mix(in srgb, var(--warning) 60%, var(--border));
-}
-
 @media (prefers-reduced-motion: reduce) {
   .app-shell.effects-on .terminal-card-working {
     animation: none;
@@ -1049,21 +1061,151 @@ button {
   white-space: nowrap;
 }
 
-.composer-topline label {
+.composer-doc-tools {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  min-width: 0;
+}
+
+.attach-doc-button {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 26px;
+  border: 1px solid var(--border-strong);
+  border-radius: 7px;
+  background: var(--control-bg);
+  color: var(--text-soft);
+  cursor: pointer;
+  font-size: 16px;
+  font-weight: 800;
+  line-height: 1;
+}
+
+.attachment-chip {
   display: inline-flex;
   align-items: center;
-  gap: 7px;
   min-width: 0;
-  max-width: min(420px, 46vw);
-  color: var(--muted);
+  max-width: min(300px, 34vw);
+  height: 26px;
+  border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--border));
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 10%, var(--control-bg));
+  color: var(--text-soft);
+  padding: 0 3px 0 9px;
   font-size: 12px;
 }
 
-.composer-topline select {
-  width: min(300px, 32vw);
-  height: 26px;
-  padding: 0 7px;
+.attachment-chip-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.attachment-chip button {
+  display: grid;
+  flex: 0 0 auto;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  margin-left: 4px;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
   font-size: 12px;
+  line-height: 1;
+}
+
+.attachment-chip button:hover {
+  color: var(--danger);
+}
+
+.doc-picker-menu {
+  position: absolute;
+  right: 0;
+  bottom: 32px;
+  z-index: 30;
+  display: grid;
+  gap: 8px;
+  width: min(360px, calc(100vw - 320px));
+  max-width: 42vw;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  background: var(--sidebar-bg);
+  padding: 8px;
+  box-shadow: 0 14px 36px rgba(0, 0, 0, 0.34);
+}
+
+.doc-picker-search {
+  width: 100%;
+  height: 30px;
+  padding: 0 9px;
+  font-size: 12px;
+  outline: none;
+}
+
+.doc-picker-list {
+  display: grid;
+  gap: 2px;
+  max-height: 220px;
+  overflow: auto;
+}
+
+.doc-picker-option {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  min-height: 32px;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+  padding: 5px 7px;
+  text-align: left;
+}
+
+.doc-picker-option:hover,
+.doc-picker-option-active {
+  border-color: var(--focus);
+  background: var(--hover-bg);
+}
+
+.doc-picker-option span,
+.doc-picker-option small {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.doc-picker-option span {
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.doc-picker-option small {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.doc-picker-clear {
+  grid-template-columns: minmax(0, 1fr);
+  color: var(--muted);
+}
+
+.doc-picker-empty {
+  padding: 10px;
+  color: var(--muted);
+  font-size: 12px;
+  text-align: center;
 }
 
 .composer-row {
@@ -1263,6 +1405,49 @@ button {
   color: var(--muted);
   font-size: 11.5px;
   line-height: 1.5;
+}
+
+.import-hint-limit {
+  margin-top: 6px;
+  color: var(--muted);
+  opacity: 0.85;
+}
+
+.import-detect {
+  font-size: 11.5px;
+  line-height: 1.5;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 6px 10px;
+  background: var(--panel-bg);
+}
+
+.import-detect-ok {
+  color: var(--success, #52b788);
+  border-color: var(--success, #52b788);
+}
+
+.import-detect-warn {
+  color: var(--warning);
+  border-color: var(--warning);
+}
+
+.import-detect-missing {
+  color: var(--muted);
+}
+
+.import-detect-path {
+  margin-top: 2px;
+}
+
+.import-detect-path code,
+.import-detect code {
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
+.import-detect a {
+  color: var(--accent);
 }
 
 .import-review {

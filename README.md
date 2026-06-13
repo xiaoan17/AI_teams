@@ -36,7 +36,7 @@ AI Teams is meant to run your own agent CLIs locally. The desktop app uses an ap
 npm run dev
 ```
 
-On first launch, the desktop app creates its user-level config at `~/Library/Application Support/ai-teams/agents.json` on macOS. The default desktop config enables Codex, Claude Code, and Kimi; disable or edit any agent you do not use in that user-level config.
+On first launch, the desktop app creates its user-level config at `~/Library/Application Support/ai-teams/agents.json` on macOS. The default desktop config enables Codex, Claude Code, and Kimi; disable or edit any agent you do not use in that user-level config. On later launches, the app also scans your local executable path for known CLI agents such as Codex, Claude Code, Kimi, and Gemini, then appends newly discovered agents that are not already in the app-level config.
 
 Run this when you want to inspect config paths or troubleshoot missing CLIs:
 
@@ -58,7 +58,7 @@ This creates `.aiteam-demo/` locally and opens the desktop app with echo-only ag
 
 The desktop app and the CLI read different agent configs on purpose:
 
-- **Desktop app** (`npm run dev`): agents are app-level capabilities. The config lives in Electron user data — on macOS `~/Library/Application Support/ai-teams/agents.json` — and is created with defaults on first launch. Override the location with the `AITEAMS_AGENT_CONFIG_PATH` env var. Switching projects keeps the same agent list; relative agent `cwd` values resolve against the selected project.
+- **Desktop app** (`npm run dev`): agents are app-level capabilities. The config lives in Electron user data — on macOS `~/Library/Application Support/ai-teams/agents.json` — and is created with defaults on first launch. Override the location with the `AITEAMS_AGENT_CONFIG_PATH` env var. Switching projects keeps the same agent list; relative agent `cwd` values resolve against the selected project. The app expands the macOS desktop `PATH` with your login shell path plus common install locations before scanning, so agents installed under Homebrew, `~/.local/bin`, or `~/.kimi-code/bin` can be found even when launching from Finder.
 - **CLI** (`aiteam.py`): the workspace-local `.aiteam/agents.json` is canonical. `init`, `agent set`, `start`, `send`, and `status` all read and write it.
 - **Demo mode** (`npm run dev:demo`): the only case where the desktop app reads a workspace `.aiteam/agents.json`, and only when every agent in it has `permission_mode: "demo-echo"`.
 

@@ -1,0 +1,318 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AI Teams - Light Logo Direction</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --paper: #f8faf7;
+      --surface: #ffffff;
+      --mist: #e8edf2;
+      --line: #d7e0e7;
+      --ink: #17212b;
+      --muted: #62707c;
+      --blue: #315f8f;
+      --route: #4f8edb;
+      --amber: #f2b84b;
+      --green: #4fbf93;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      min-width: 320px;
+      background:
+        linear-gradient(var(--mist) 1px, transparent 1px),
+        linear-gradient(90deg, var(--mist) 1px, transparent 1px),
+        var(--paper);
+      background-size: 56px 56px;
+      color: var(--ink);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      letter-spacing: 0;
+    }
+
+    .page {
+      width: min(1240px, calc(100% - 48px));
+      margin: 0 auto;
+      padding: 48px 0 56px;
+    }
+
+    .hero {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 30px;
+      align-items: end;
+      margin-bottom: 28px;
+      padding: 34px;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: rgba(255, 255, 255, .82);
+      box-shadow: 0 18px 60px rgba(30, 52, 70, .08);
+    }
+
+    .eyebrow {
+      margin: 0 0 10px;
+      color: var(--blue);
+      font-size: 11px;
+      font-weight: 800;
+      text-transform: uppercase;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: clamp(40px, 7vw, 78px);
+      line-height: .95;
+      font-weight: 780;
+    }
+
+    .tagline {
+      max-width: 650px;
+      margin: 18px 0 0;
+      color: var(--muted);
+      font-size: 15px;
+      line-height: 1.65;
+    }
+
+    .palette {
+      display: grid;
+      grid-auto-flow: column;
+      gap: 8px;
+    }
+
+    .swatch {
+      width: 38px;
+      height: 38px;
+      border: 1px solid var(--line);
+      border-radius: 9px;
+      background: var(--swatch);
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 16px;
+    }
+
+    .card {
+      display: grid;
+      gap: 16px;
+      min-height: 430px;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: rgba(255, 255, 255, .9);
+      padding: 18px;
+      box-shadow: 0 14px 44px rgba(30, 52, 70, .06);
+    }
+
+    .specimen {
+      display: grid;
+      grid-template-columns: 150px minmax(0, 1fr);
+      gap: 18px;
+      align-items: center;
+    }
+
+    .symbol {
+      display: grid;
+      place-items: center;
+      aspect-ratio: 1 / 1;
+      border: 1px solid var(--line);
+      border-radius: 28px;
+      background: var(--paper);
+      color: var(--mark);
+    }
+
+    .symbol svg {
+      width: 72%;
+      height: auto;
+    }
+
+    .icon {
+      width: 116px;
+      height: 116px;
+      filter: drop-shadow(0 14px 28px rgba(32, 48, 64, .16));
+    }
+
+    h2 {
+      margin: 0;
+      font-size: 21px;
+      line-height: 1.2;
+    }
+
+    .meta {
+      margin: 6px 0 0;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .rationale {
+      margin: 0;
+      color: #334250;
+      font-size: 14px;
+      line-height: 1.6;
+    }
+
+    .chips {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      align-self: end;
+    }
+
+    .chip {
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      background: #f3f6f8;
+      color: var(--muted);
+      padding: 5px 8px;
+      font-size: 11px;
+      font-weight: 750;
+      text-transform: uppercase;
+    }
+
+    .chip.primary {
+      border-color: #e2bd57;
+      background: #fff2cf;
+      color: #8a6410;
+    }
+
+    .recommendation {
+      margin-top: 18px;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: rgba(255, 255, 255, .92);
+      padding: 18px;
+      color: #334250;
+      line-height: 1.65;
+    }
+
+    .recommendation b {
+      color: var(--blue);
+    }
+
+    @media (max-width: 980px) {
+      .grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+    }
+
+    @media (max-width: 680px) {
+      .page {
+        width: min(100% - 28px, 1240px);
+        padding-top: 28px;
+      }
+
+      .hero,
+      .grid,
+      .specimen {
+        grid-template-columns: 1fr;
+      }
+
+      .palette {
+        justify-content: start;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main class="page">
+    <section class="hero">
+      <div>
+        <p class="eyebrow">Light Direction</p>
+        <h1>AI Teams</h1>
+        <p class="tagline">A brighter identity system for a local command dispatch layer: porcelain surfaces, precise route marks, and small cursor-like accents instead of dark terminal mood or AI cliches.</p>
+      </div>
+      <div class="palette" aria-label="Palette">
+        <span class="swatch" style="--swatch:#f8faf7"></span>
+        <span class="swatch" style="--swatch:#e8edf2"></span>
+        <span class="swatch" style="--swatch:#17212b"></span>
+        <span class="swatch" style="--swatch:#315f8f"></span>
+        <span class="swatch" style="--swatch:#f2b84b"></span>
+        <span class="swatch" style="--swatch:#4fbf93"></span>
+      </div>
+    </section>
+
+    <section class="grid">
+      <article class="card">
+        <div class="specimen">
+          <div class="symbol" style="--mark:#315f8f">
+            <svg viewBox="0 0 100 100" aria-hidden="true"><g fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><path d="M21 29H43C54 29 61 36 61 47V53C61 64 54 71 43 71H21" stroke-width="7.5"/><path d="M61 50H80" stroke-width="7.5"/><path d="M27 50H45" stroke-width="5" opacity=".34"/><circle cx="21" cy="29" r="7" fill="currentColor" stroke="none"/><circle cx="21" cy="71" r="7" fill="currentColor" stroke="none"/><circle cx="80" cy="50" r="8" fill="currentColor" stroke="none"/></g></svg>
+          </div>
+          <img class="icon" src="app-icons/01-light-dispatch-core-light-app-icon.png" alt="Dispatch Core app icon">
+        </div>
+        <div><h2>Dispatch Core</h2><p class="meta">command router / strongest primitive</p></div>
+        <p class="rationale">The clearest product primitive: one command lane dispatching work to multiple agents. It avoids AI imagery while still feeling like routing, control, and direction.</p>
+        <div class="chips"><span class="chip primary">shortlist</span><span class="chip">main mark</span><span class="chip">app icon</span></div>
+      </article>
+
+      <article class="card">
+        <div class="specimen">
+          <div class="symbol" style="--mark:#f2b84b">
+            <svg viewBox="0 0 100 100" aria-hidden="true"><g fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><circle cx="50" cy="50" r="10" fill="currentColor" stroke="none"/><path d="M50 22V34" stroke-width="5.5"/><path d="M74 36L64 42" stroke-width="5.5"/><path d="M74 64L64 58" stroke-width="5.5"/><path d="M50 78V66" stroke-width="5.5" opacity=".42"/><path d="M26 64L36 58" stroke-width="5.5" opacity=".42"/><path d="M26 36L36 42" stroke-width="5.5" opacity=".42"/><circle cx="50" cy="22" r="5.5" fill="currentColor" stroke="none"/><circle cx="74" cy="36" r="5.5" fill="currentColor" stroke="none"/><circle cx="74" cy="64" r="5.5" fill="currentColor" stroke="none"/></g></svg>
+          </div>
+          <img class="icon" src="app-icons/02-command-spark-light-app-icon.png" alt="Command Spark app icon">
+        </div>
+        <div><h2>Command Spark</h2><p class="meta">active input / agent signal</p></div>
+        <p class="rationale">A brighter status-signal direction. Useful as secondary visual language, but less ownable as the primary product logo.</p>
+        <div class="chips"><span class="chip">alternate</span><span class="chip">status</span></div>
+      </article>
+
+      <article class="card">
+        <div class="specimen">
+          <div class="symbol" style="--mark:#315f8f">
+            <svg viewBox="0 0 100 100" aria-hidden="true"><g fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><path d="M31 16H59L80 37V73C80 80 75 85 68 85H32C25 85 20 80 20 73V27C20 20 24 16 31 16Z" stroke-width="6.5"/><path d="M59 17V31C59 35 62 38 66 38H79" stroke-width="5.2"/><path d="M36 45H58" stroke-width="5"/><path d="M36 60H51" stroke-width="5" opacity=".42"/><path d="M58 71H67C72 71 75 68 75 63V55" stroke-width="5.2"/><path d="M70 52L75 57L80 52" stroke-width="5.2"/></g></svg>
+          </div>
+          <img class="icon" src="app-icons/03-paper-router-light-app-icon.png" alt="Paper Router app icon">
+        </div>
+        <div><h2>Paper Router</h2><p class="meta">docs + git context handoff</p></div>
+        <p class="rationale">Best if the identity should emphasize handoff documents as the protocol between agents. It is clear, but slightly closer to a document app.</p>
+        <div class="chips"><span class="chip primary">shortlist</span><span class="chip">context</span></div>
+      </article>
+
+      <article class="card">
+        <div class="specimen">
+          <div class="symbol" style="--mark:#4f8edb">
+            <svg viewBox="0 0 100 100" aria-hidden="true"><g fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><circle cx="50" cy="50" r="33" stroke-width="5.5"/><path d="M50 17A33 33 0 0 1 80 63" stroke-width="7"/><path d="M50 50L65 35" stroke-width="5.2"/><path d="M50 50L36 64" stroke-width="5.2" opacity=".42"/><circle cx="50" cy="50" r="7.5" fill="currentColor" stroke="none"/><circle cx="65" cy="35" r="5.8" fill="currentColor" stroke="none"/><circle cx="36" cy="64" r="5.8" fill="currentColor" stroke="none" opacity=".64"/></g></svg>
+          </div>
+          <img class="icon" src="app-icons/04-agent-compass-light-app-icon.png" alt="Agent Compass app icon">
+        </div>
+        <div><h2>Agent Compass</h2><p class="meta">supervision / situational awareness</p></div>
+        <p class="rationale">A lighter supervision/control instrument. This is the friendliest direction, good if the product should feel more approachable and less like infrastructure.</p>
+        <div class="chips"><span class="chip primary">shortlist</span><span class="chip">supervision</span></div>
+      </article>
+
+      <article class="card">
+        <div class="specimen">
+          <div class="symbol" style="--mark:#28785f">
+            <svg viewBox="0 0 100 100" aria-hidden="true"><g fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><path d="M30 75V28" stroke-width="7"/><path d="M30 44C43 44 49 30 63 30H74" stroke-width="7"/><path d="M30 56C43 56 49 70 63 70H74" stroke-width="7" opacity=".72"/><path d="M55 50H76" stroke-width="4.5" opacity=".32"/><circle cx="30" cy="75" r="7" fill="currentColor" stroke="none"/><circle cx="30" cy="28" r="6" fill="currentColor" stroke="none" opacity=".64"/><circle cx="74" cy="30" r="7" fill="currentColor" stroke="none"/><circle cx="74" cy="70" r="7" fill="currentColor" stroke="none"/></g></svg>
+          </div>
+          <img class="icon" src="app-icons/05-worktree-flow-light-app-icon.png" alt="Worktree Flow app icon">
+        </div>
+        <div><h2>Worktree Flow</h2><p class="meta">parallel implementation paths</p></div>
+        <p class="rationale">Good for explaining worktrees, but as a logo it risks reading as a Git/DevOps mark instead of the broader AI Teams product.</p>
+        <div class="chips"><span class="chip">alternate</span><span class="chip">git</span></div>
+      </article>
+
+      <article class="card">
+        <div class="specimen">
+          <div class="symbol" style="--mark:#17212b">
+            <svg viewBox="0 0 100 100" aria-hidden="true"><g fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"><rect x="18" y="18" width="64" height="64" rx="17" stroke-width="6.5"/><path d="M34 66L50 31L66 66" stroke-width="6.2"/><path d="M41 52H59" stroke-width="5"/><path d="M31 31H69" stroke-width="5" opacity=".42"/><path d="M51 31V69" stroke-width="5" opacity=".42"/></g></svg>
+          </div>
+          <img class="icon" src="app-icons/06-at-window-light-app-icon.png" alt="AT Window app icon">
+        </div>
+        <div><h2>AT Window</h2><p class="meta">light app monogram</p></div>
+        <p class="rationale">A direct monogram/app-window route. It is readable, but more generic and less tied to the dispatch-layer idea.</p>
+        <div class="chips"><span class="chip">alternate</span><span class="chip">monogram</span></div>
+      </article>
+    </section>
+
+    <section class="recommendation">
+      <b>Recommendation:</b> take `01 Dispatch Core` forward and refine it, not the full set. The right next step is to test it in the actual sidebar mark, app dock icon, and README header, then tune stroke weight and color.
+    </section>
+  </main>
+</body>
+</html>
