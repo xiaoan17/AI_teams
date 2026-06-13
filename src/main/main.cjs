@@ -1397,7 +1397,12 @@ function directPasteAndSubmitToAgent(agentId, message) {
 }
 
 function runtimeSession(config = loadConfig()) {
-  return config.workspace?.tmux_session || workspaceSessionName(WORKSPACE_ROOT);
+  // Always derive the session name from the live workspace path. A stale
+  // `tmux_session` frozen into agents.json by an older init (e.g. a name
+  // without the sha1 suffix) must never win over the computed value, or
+  // doctor/stop/attach end up targeting a session the app never created.
+  // The frozen value is only a last-resort fallback if computation fails.
+  return workspaceSessionName(WORKSPACE_ROOT) || config.workspace?.tmux_session;
 }
 
 function readRuntime() {
@@ -1449,6 +1454,20 @@ function tmuxAvailable() {
 
 function tmuxHasSession(session) {
   return runTmux(["has-session", "-t", session], { check: false }).status === 0;
+}
+
+// True when a session exists AND still has at least one live (non-dead) pane.
+// A session shell can outlive all its panes (zombie shell); callers that want
+// to reuse a session must check liveness, not mere existence.
+function tmuxSessionHasLivePane(session) {
+  const result = runTmux(
+    ["list-panes", "-s", "-t", session, "-F", "#{pane_dead}"],
+    { check: false }
+  );
+  if (result.status !== 0) {
+    return false;
+  }
+  return result.stdout.split("\n").some((line) => line.trim() === "0");
 }
 
 function tmuxPaneField(pane, field) {
@@ -1851,6 +1870,25 @@ async function reconcileTmuxBackend() {
       { check: false }
     );
     const panes = parseTmuxPaneTable(panesResult.stdout);
+
+    // Zombie session guard: tmux can leave a session shell alive after every
+    // pane inside it has died (or been killed externally). `has-session` still
+    // reports success, so the rest of reconcile would keep waiting on panes
+    // that no longer exist and the UI hangs. If the session has no live panes,
+    // tear the shell down here and fall back to the "no base session" path so
+    // the next start rebuilds a clean session.
+    const hasLivePane = [...panes.values()].some((pane) => !pane.dead);
+    if (!hasLivePane) {
+      logTmux.warn("tmux session has no live panes; clearing zombie shell", { session });
+      await runTmuxAsync(["kill-session", "-t", session], { check: false });
+      await tmuxViews.destroyAll();
+      await destroyTmuxViewSessionsForBase(session);
+      for (const agent of config.agents) {
+        emitTmuxStatusIfChanged(agent.id, tmuxAgentPublicState(agent, { config }));
+      }
+      return;
+    }
+
     const panesByAgentId = parseTmuxAgentPaneTable(panesResult.stdout);
     reconcileRuntimePanesFromTable(config, runtime, panesByAgentId);
     const sessionsResult = await runTmuxAsync(["list-sessions", "-F", "#{session_name}\t#{window_id}"], { check: false });
@@ -1980,7 +2018,13 @@ async function tmuxStartAgent(agentId) {
 
   const session = runtimeSession(config);
   let runtime;
-  if (!tmuxHasSession(session)) {
+  if (!tmuxHasSession(session) || !tmuxSessionHasLivePane(session)) {
+    // Either no session, or a zombie shell whose panes have all died. In both
+    // cases discard whatever is left and build a fresh session so the agent
+    // attaches to a live pane instead of hanging on a dead one.
+    if (tmuxHasSession(session)) {
+      runTmux(["kill-session", "-t", session], { check: false });
+    }
     runtime = createTmuxSession(config, [agent]);
   } else {
     runtime = normalizeRuntime(readRuntime(), session);

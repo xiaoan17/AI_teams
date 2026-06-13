@@ -107,6 +107,28 @@ def save_config(root: Path, cfg: dict[str, Any]) -> None:
     write_json(config_path(root), cfg)
 
 
+def resolved_session(root: Path, cfg: dict[str, Any]) -> str:
+    """Return the canonical tmux session name for this workspace.
+
+    The session name is derived live from the workspace path. An older init may
+    have frozen a stale `workspace.tmux_session` (e.g. a name without the sha1
+    suffix); if that frozen value disagrees with the computed one we heal it by
+    rewriting agents.json so doctor/start/stop/send and the desktop app all
+    target the same session and stop leaving zombie shells behind.
+    """
+    session = workspace_session_name(root)
+    workspace = cfg.setdefault("workspace", {})
+    if workspace.get("tmux_session") != session:
+        workspace["tmux_session"] = session
+        try:
+            save_config(root, cfg)
+        except OSError:
+            # Healing the frozen value is best-effort; the computed name still
+            # governs this run even if we cannot persist it.
+            pass
+    return session
+
+
 def load_runtime(root: Path) -> dict[str, Any]:
     return load_json(runtime_path(root), default={})
 
@@ -346,7 +368,7 @@ def cmd_start(args: argparse.Namespace) -> int:
     root = args.root.resolve()
     ensure_dirs(root)
     cfg = load_config(root)
-    session = cfg["workspace"]["tmux_session"]
+    session = resolved_session(root, cfg)
     agents = enabled_agents(cfg)
     if not agents:
         raise AITeamError("No enabled agents. Edit .aiteam/agents.json or run `init --demo` in a scratch workspace.")
@@ -496,7 +518,7 @@ def cmd_send(args: argparse.Namespace) -> int:
     root = args.root.resolve()
     cfg = load_config(root)
     runtime = load_runtime(root)
-    session = cfg["workspace"]["tmux_session"]
+    session = resolved_session(root, cfg)
     if not tmux_has_session(session):
         raise AITeamError(f"tmux session is not running: {session}. Run `start` first.")
 
@@ -561,7 +583,7 @@ def cmd_status(args: argparse.Namespace) -> int:
     root = args.root.resolve()
     cfg = load_config(root)
     runtime = load_runtime(root)
-    session = cfg["workspace"]["tmux_session"]
+    session = resolved_session(root, cfg)
     results: list[dict[str, Any]] = []
     if not tmux_has_session(session):
         for agent in cfg.get("agents", []):
@@ -607,7 +629,7 @@ def cmd_capture(args: argparse.Namespace) -> int:
 def cmd_stop(args: argparse.Namespace) -> int:
     root = args.root.resolve()
     cfg = load_config(root)
-    session = cfg["workspace"]["tmux_session"]
+    session = resolved_session(root, cfg)
     runtime = load_runtime(root)
     if not tmux_has_session(session):
         print(f"tmux session is not running: {session}")
@@ -776,7 +798,7 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         return 1
 
     cfg = load_config(root)
-    session = cfg.get("workspace", {}).get("tmux_session", workspace_session_name(root))
+    session = resolved_session(root, cfg)
     report(True, "workspace", str(root))
     report(True, "tmux_session", session)
     if tmux_has_session(session):
