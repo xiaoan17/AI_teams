@@ -5,15 +5,18 @@ import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
 import {
   TERMINAL_SCROLLBACK_LINES,
+  appendBoundedTerminalWrite,
   filterTerminalInput,
   filterTerminalOutput,
   handleTerminalWheel,
-  resetTerminalMouseModes
+  resetTerminalMouseModes,
+  trimPendingOutputQueue
 } from "./terminal-wheel.mjs";
 import "./styles.css";
 import { DEFAULT_THEME_ID, themePresets, themeToCssVars } from "./themes.js";
 import { installRendererLogging } from "./renderer-log.mjs";
-import aiTeamsAppIcon from "../../public/app-icon.png";
+
+const aiTeamsAppIcon = `${import.meta.env.BASE_URL}app-icon.png`;
 
 const browserPreviewApi = {
   getWorkspace: async () => ({
@@ -474,9 +477,12 @@ function AgentTerminal({ agent, active, hidden, terminalTheme, onFocus, onNotice
   const writeOutputRef = useRef(null);
   const lastSeqRef = useRef(0);
   const pendingOutputRef = useRef([]);
+  const pendingOutputCharsRef = useRef(0);
   const pendingTerminalOutputRef = useRef("");
+  const pendingWriteTextRef = useRef("");
+  const pendingWriteSeqRef = useRef(0);
+  const writeFrameRef = useRef(0);
   const snapshotReadyRef = useRef(false);
-  const outputWriteDepthRef = useRef(0);
   const terminalThemeRef = useRef(terminalTheme);
 
   useEffect(() => {
@@ -487,7 +493,11 @@ function AgentTerminal({ agent, active, hidden, terminalTheme, onFocus, onNotice
     let lastResizeKey = "";
     lastSeqRef.current = 0;
     pendingOutputRef.current = [];
+    pendingOutputCharsRef.current = 0;
     pendingTerminalOutputRef.current = "";
+    pendingWriteTextRef.current = "";
+    pendingWriteSeqRef.current = 0;
+    writeFrameRef.current = 0;
     snapshotReadyRef.current = false;
     const terminal = new Terminal({
       cursorBlink: true,
@@ -518,13 +528,39 @@ function AgentTerminal({ agent, active, hidden, terminalTheme, onFocus, onNotice
     const writeOutput = (data) => {
       const visibleData = filterTerminalOutput(data, pendingTerminalOutputRef);
       if (!visibleData) return false;
-      outputWriteDepthRef.current += 1;
       terminal.write(visibleData, () => {
-        outputWriteDepthRef.current = Math.max(0, outputWriteDepthRef.current - 1);
         resetTerminalMouseModes(terminal);
         refreshViewport();
       });
       return true;
+    };
+    const flushQueuedOutput = () => {
+      writeFrameRef.current = 0;
+      if (disposed || !termRef.current) {
+        pendingWriteTextRef.current = "";
+        pendingWriteSeqRef.current = 0;
+        return;
+      }
+      const text = pendingWriteTextRef.current;
+      const seq = pendingWriteSeqRef.current;
+      pendingWriteTextRef.current = "";
+      pendingWriteSeqRef.current = 0;
+      if (!text) return;
+      const didWrite = writeOutput(text);
+      if (didWrite && seq) {
+        lastSeqRef.current = seq;
+      }
+    };
+    const queueOutput = (data, seq = 0) => {
+      const text = String(data || "");
+      if (!text) return;
+      pendingWriteTextRef.current = appendBoundedTerminalWrite(pendingWriteTextRef.current, text);
+      if (seq) {
+        pendingWriteSeqRef.current = Math.max(pendingWriteSeqRef.current || 0, seq);
+      }
+      if (!writeFrameRef.current) {
+        writeFrameRef.current = requestAnimationFrame(flushQueuedOutput);
+      }
     };
     const fitAddon = new FitAddon();
     terminal.loadAddon(fitAddon);
@@ -557,9 +593,6 @@ function AgentTerminal({ agent, active, hidden, terminalTheme, onFocus, onNotice
     };
     fitAndSync();
     terminal.onData((data) => {
-      if (outputWriteDepthRef.current > 0) {
-        return;
-      }
       if (!agent.pane || stoppedOrExited(agent)) {
         return;
       }
@@ -575,7 +608,7 @@ function AgentTerminal({ agent, active, hidden, terminalTheme, onFocus, onNotice
     fitRef.current = fitAddon;
     scheduleResizeRef.current = scheduleResize;
     scheduleRefreshRef.current = refreshViewport;
-    writeOutputRef.current = writeOutput;
+    writeOutputRef.current = queueOutput;
 
     const observer = new ResizeObserver(scheduleResize);
     observer.observe(containerRef.current);
@@ -598,12 +631,10 @@ function AgentTerminal({ agent, active, hidden, terminalTheme, onFocus, onNotice
         snapshotReadyRef.current = true;
         for (const pending of pendingOutputRef.current) {
           if (pending.seq && pending.seq <= lastSeqRef.current) continue;
-          writeOutput(pending.data);
-          if (pending.seq) {
-            lastSeqRef.current = pending.seq;
-          }
+          queueOutput(pending.data, pending.seq);
         }
         pendingOutputRef.current = [];
+        pendingOutputCharsRef.current = 0;
         scheduleResize();
       } catch (error) {
         if (!disposed) {
@@ -622,6 +653,9 @@ function AgentTerminal({ agent, active, hidden, terminalTheme, onFocus, onNotice
       if (refreshFrame) {
         cancelAnimationFrame(refreshFrame);
       }
+      if (writeFrameRef.current) {
+        cancelAnimationFrame(writeFrameRef.current);
+      }
       resizeTimers.forEach((timer) => clearTimeout(timer));
       observer.disconnect();
       window.removeEventListener("resize", scheduleResize);
@@ -631,6 +665,8 @@ function AgentTerminal({ agent, active, hidden, terminalTheme, onFocus, onNotice
       scheduleResizeRef.current = null;
       scheduleRefreshRef.current = null;
       writeOutputRef.current = null;
+      pendingWriteTextRef.current = "";
+      pendingWriteSeqRef.current = 0;
     };
   }, [agent.backend, agent.id, agent.name, agent.pane, agent.rawLog, onNotice]);
 
@@ -665,19 +701,16 @@ function AgentTerminal({ agent, active, hidden, terminalTheme, onFocus, onNotice
     const off = api.onAgentData(({ id, data, seq = 0 }) => {
       if (id === agent.id && termRef.current) {
         if (!snapshotReadyRef.current) {
-          pendingOutputRef.current.push({ data, seq });
+          const text = String(data || "");
+          pendingOutputRef.current.push({ data: text, seq });
+          pendingOutputCharsRef.current += text.length;
+          pendingOutputCharsRef.current = trimPendingOutputQueue(pendingOutputRef.current, pendingOutputCharsRef.current);
           return;
         }
         if (seq && seq <= lastSeqRef.current) {
           return;
         }
-        const didWrite = writeOutputRef.current?.(data);
-        if (!didWrite) {
-          return;
-        }
-        if (seq) {
-          lastSeqRef.current = seq;
-        }
+        writeOutputRef.current?.(data, seq);
       }
     });
     return off;

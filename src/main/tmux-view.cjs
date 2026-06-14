@@ -1,6 +1,8 @@
 const { execFile } = require("child_process");
 
 const DEFAULT_REATTACH_DELAYS = [500, 1000, 2000, 4000, 4000];
+const TMUX_COMMAND_TIMEOUT_MS = Math.max(500, Number(process.env.AITEAMS_TMUX_COMMAND_TIMEOUT_MS || 3000));
+const TMUX_COMMAND_MAX_BUFFER_BYTES = 16 * 1024 * 1024;
 
 function runTmuxAsync(args, options = {}) {
   const check = options.check !== false;
@@ -8,13 +10,15 @@ function runTmuxAsync(args, options = {}) {
     const child = execFile("tmux", args, {
       encoding: "utf8",
       input: options.input,
-      maxBuffer: options.maxBuffer || 10 * 1024 * 1024
+      timeout: options.timeout || TMUX_COMMAND_TIMEOUT_MS,
+      maxBuffer: options.maxBuffer || TMUX_COMMAND_MAX_BUFFER_BYTES
     }, (error, stdout = "", stderr = "") => {
       if (error) {
         const status = Number.isFinite(error.code) ? error.code : 1;
         const result = { status, stdout: String(stdout || ""), stderr: String(stderr || "") };
         if (check) {
-          const detail = result.stderr.trim() || result.stdout.trim() || error.message;
+          const timedOut = error.signal ? `signal=${error.signal}` : "";
+          const detail = result.stderr.trim() || result.stdout.trim() || [error.message, timedOut].filter(Boolean).join(" ");
           reject(new Error(`tmux ${args.join(" ")} failed: ${detail}`));
           return;
         }

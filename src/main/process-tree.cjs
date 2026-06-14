@@ -16,6 +16,7 @@ function defaultPsSnapshot() {
   // `ps -axo pid=,ppid=` prints two whitespace-separated columns with no header.
   const stdout = execFileSync("ps", ["-axo", "pid=,ppid="], {
     encoding: "utf8",
+    timeout: 1000,
     maxBuffer: 8 * 1024 * 1024
   });
   return parsePsSnapshot(stdout);

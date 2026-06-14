@@ -13,6 +13,28 @@ export const TERMINAL_MOUSE_MODE_PARAMS = new Set([
 ]);
 
 export const TERMINAL_MOUSE_MODE_RESET = `\x1b[?${[...TERMINAL_MOUSE_MODE_PARAMS].join(";")}l`;
+export const TERMINAL_PENDING_OUTPUT_CHARS = 1000000;
+export const TERMINAL_PENDING_WRITE_CHARS = 2000000;
+
+export function trimPendingOutputQueue(queue, currentChars, maxChars = TERMINAL_PENDING_OUTPUT_CHARS) {
+  const items = Array.isArray(queue) ? queue : [];
+  let chars = Math.max(0, Number(currentChars) || 0);
+  const limit = Math.max(0, Number(maxChars) || 0);
+  while (chars > limit && items.length > 1) {
+    const dropped = items.shift();
+    chars -= String(dropped?.data || "").length;
+  }
+  return Math.max(0, chars);
+}
+
+export function appendBoundedTerminalWrite(current, data, maxChars = TERMINAL_PENDING_WRITE_CHARS) {
+  const limit = Math.max(0, Number(maxChars) || 0);
+  if (!limit) {
+    return "";
+  }
+  const next = `${current || ""}${data || ""}`;
+  return next.length > limit ? next.slice(-limit) : next;
+}
 
 export function wheelEventToScrollLines(event, rowHeight = 16) {
   const deltaY = Number(event?.deltaY || 0);

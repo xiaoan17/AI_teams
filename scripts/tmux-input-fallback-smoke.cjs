@@ -2,12 +2,24 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const { execFileSync } = require("child_process");
+const { tmuxInputActions } = require("../src/main/tmux-input.cjs");
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "aiteams-input-fallback-smoke-"));
 const appDir = path.join(root, ".aiteam");
 const session = `aiteams-input-fallback-${process.pid}-${Date.now()}`;
 const agentId = "cat";
 const message = `INPUT_FALLBACK_${Date.now()}`;
+
+const parsedActions = tmuxInputActions("ab\x7fcd\r\x1b[A");
+if (JSON.stringify(parsedActions) !== JSON.stringify([
+  { type: "text", value: "ab" },
+  { type: "key", key: "BSpace" },
+  { type: "text", value: "cd" },
+  { type: "key", key: "C-m" },
+  { type: "key", key: "Up" }
+])) {
+  throw new Error(`Unexpected tmux input actions: ${JSON.stringify(parsedActions)}`);
+}
 
 function ensureDir(dir) {
   fs.mkdirSync(dir, { recursive: true });
@@ -44,12 +56,18 @@ function capturePane(pane) {
 }
 
 function writeInputFallback(pane, text) {
-  const bufferName = `aiteam-input-smoke-${process.pid}`;
-  try {
-    runTmux(["load-buffer", "-b", bufferName, "-"], { input: text });
-    runTmux(["paste-buffer", "-b", bufferName, "-t", pane, "-p"]);
-  } finally {
-    runTmux(["delete-buffer", "-b", bufferName], { check: false });
+  for (const action of tmuxInputActions(text)) {
+    if (action.type === "key") {
+      runTmux(["send-keys", "-t", pane, action.key]);
+      continue;
+    }
+    const bufferName = `aiteam-input-smoke-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    try {
+      runTmux(["load-buffer", "-b", bufferName, "-"], { input: action.value });
+      runTmux(["paste-buffer", "-b", bufferName, "-t", pane, "-p"]);
+    } finally {
+      runTmux(["delete-buffer", "-b", bufferName], { check: false });
+    }
   }
 }
 
@@ -78,8 +96,8 @@ async function waitFor(predicate, timeoutMs) {
     const pane = runTmux(["display-message", "-p", "-t", `${session}:0.0`, "#{pane_id}"]).trim();
     runTmux(["pipe-pane", "-o", "-t", pane, `cat >> ${shellQuote(rawLog)}`]);
 
-    writeInputFallback(pane, `${message}\r`);
-    const ok = await waitFor(() => capturePane(pane).includes(message), 5000);
+    writeInputFallback(pane, `ab\x7f${message}\r`);
+    const ok = await waitFor(() => capturePane(pane).includes(`a${message}`), 5000);
     if (!ok) {
       console.error("--- pane capture ---");
       console.error(capturePane(pane));

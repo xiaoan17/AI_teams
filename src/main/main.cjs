@@ -12,6 +12,7 @@ const {
 } = require("./tmux-runtime.cjs");
 const agentDetect = require("./agent-detect.cjs");
 const { killProcessTree } = require("./process-tree.cjs");
+const { tmuxInputActions } = require("./tmux-input.cjs");
 const { initLogger, scoped } = require("./logger.cjs");
 
 // Scoped loggers. Safe to create before initLogger(); electron-log buffers
@@ -50,6 +51,9 @@ const STATUS_BUFFER_CHARS = 12000;
 const TERMINAL_REPLAY_BUFFER_CHARS = 750000;
 const TERMINAL_SNAPSHOT_LINES = 2000;
 const TMUX_RECONCILE_INTERVAL_MS = 5000;
+const TMUX_COMMAND_TIMEOUT_MS = Math.max(500, Number(process.env.AITEAMS_TMUX_COMMAND_TIMEOUT_MS || 3000));
+const TMUX_COMMAND_MAX_BUFFER_BYTES = 16 * 1024 * 1024;
+const SLOW_OPERATION_LOG_MS = Math.max(250, Number(process.env.AITEAMS_SLOW_OPERATION_LOG_MS || 1000));
 const COMMON_EXECUTABLE_DIRS = [
   "/opt/homebrew/bin",
   "/usr/local/bin",
@@ -77,6 +81,7 @@ let DOCS_DIR = "";
 let DOCUMENT_PINS_PATH = "";
 let RUNTIME_PATH = "";
 let TMP_DIR = "";
+let workspaceEpoch = 0;
 
 const DOCUMENT_EXCLUDED_DIRS = new Set([
   ".git",
@@ -168,6 +173,7 @@ function ensureDesktopSearchPath() {
 ensureDesktopSearchPath();
 
 function setWorkspaceRoot(root) {
+  const previousRoot = WORKSPACE_ROOT;
   WORKSPACE_ROOT = path.resolve(root);
   AITEAM_DIR = path.join(WORKSPACE_ROOT, ".aiteam");
   WORKSPACE_CONFIG_PATH = path.join(AITEAM_DIR, "agents.json");
@@ -178,9 +184,16 @@ function setWorkspaceRoot(root) {
   DOCUMENT_PINS_PATH = path.join(AITEAM_DIR, "document-pins.json");
   RUNTIME_PATH = path.join(AITEAM_DIR, "runtime.json");
   TMP_DIR = path.join(AITEAM_DIR, "tmp");
+  if (path.resolve(previousRoot) !== WORKSPACE_ROOT) {
+    workspaceEpoch += 1;
+  }
 }
 
 setWorkspaceRoot(DEFAULT_WORKSPACE_ROOT);
+
+function bumpWorkspaceEpoch() {
+  workspaceEpoch += 1;
+}
 
 function ensureDir(dir) {
   fs.mkdirSync(dir, { recursive: true });
@@ -384,7 +397,8 @@ function defaultAppAgentConfig() {
     routing: {
       default_agent: "codex",
       verify_injection: true,
-      verify_timeout_seconds: 1.5
+      verify_timeout_seconds: 1.5,
+      submit_delay_ms: 80
     },
     handoff_template: "请先阅读任务文档：{task_doc}；按文档中的目标、约束和产出路径工作，长上下文以文件内容为准。",
     agents: [
@@ -1426,21 +1440,33 @@ function normalizeRuntime(runtime, session) {
 function tmuxDetail(error) {
   const stdout = Buffer.isBuffer(error.stdout) ? error.stdout.toString("utf8") : String(error.stdout || "");
   const stderr = Buffer.isBuffer(error.stderr) ? error.stderr.toString("utf8") : String(error.stderr || "");
-  return stderr.trim() || stdout.trim() || error.message;
+  const timedOut = error.signal ? `signal=${error.signal}` : "";
+  return stderr.trim() || stdout.trim() || [error.message, timedOut].filter(Boolean).join(" ");
 }
 
 function runTmux(args, options = {}) {
   const check = options.check !== false;
+  const started = Date.now();
   try {
     const stdout = execFileSync("tmux", args, {
       encoding: "utf8",
       input: options.input,
-      stdio: ["pipe", "pipe", "pipe"]
+      stdio: ["pipe", "pipe", "pipe"],
+      timeout: options.timeout || TMUX_COMMAND_TIMEOUT_MS,
+      maxBuffer: options.maxBuffer || TMUX_COMMAND_MAX_BUFFER_BYTES
     });
+    const durationMs = Date.now() - started;
+    if (durationMs > SLOW_OPERATION_LOG_MS) {
+      logTmux.warn("slow tmux command", { args, durationMs });
+    }
     return { status: 0, stdout, stderr: "" };
   } catch (error) {
     const stdout = Buffer.isBuffer(error.stdout) ? error.stdout.toString("utf8") : String(error.stdout || "");
     const stderr = Buffer.isBuffer(error.stderr) ? error.stderr.toString("utf8") : String(error.stderr || "");
+    const durationMs = Date.now() - started;
+    if (durationMs > SLOW_OPERATION_LOG_MS) {
+      logTmux.warn("slow or failed tmux command", { args, durationMs, error });
+    }
     if (check) {
       throw new Error(`tmux ${args.join(" ")} failed: ${tmuxDetail(error)}`);
     }
@@ -1549,8 +1575,33 @@ function tailFile(file, maxChars = TERMINAL_REPLAY_BUFFER_CHARS) {
   if (!file || !fs.existsSync(file)) {
     return "";
   }
-  const data = fs.readFileSync(file, "utf8");
-  return data.length > maxChars ? data.slice(-maxChars) : data;
+  const limit = Math.max(0, Number(maxChars) || TERMINAL_REPLAY_BUFFER_CHARS);
+  if (!limit) {
+    return "";
+  }
+  let fd = null;
+  try {
+    const stat = fs.statSync(file);
+    if (!stat.size) {
+      return "";
+    }
+    const bytesToRead = Math.min(stat.size, limit);
+    const buffer = Buffer.allocUnsafe(bytesToRead);
+    fd = fs.openSync(file, "r");
+    const bytesRead = fs.readSync(fd, buffer, 0, bytesToRead, stat.size - bytesToRead);
+    const data = buffer.toString("utf8", 0, bytesRead);
+    return data.length > limit ? data.slice(-limit) : data;
+  } catch (_error) {
+    return "";
+  } finally {
+    if (fd !== null) {
+      try {
+        fs.closeSync(fd);
+      } catch {
+        // Ignore close failures while tailing a session log.
+      }
+    }
+  }
 }
 
 function fileSize(file) {
@@ -1850,13 +1901,17 @@ async function reconcileTmuxBackend() {
     return;
   }
   tmuxReconcileInFlight = true;
+  const epoch = workspaceEpoch;
+  const isStaleWorkspace = () => epoch !== workspaceEpoch;
   try {
     const config = loadConfig();
     const session = runtimeSession(config);
     const hasBase = await runTmuxAsync(["has-session", "-t", session], { check: false });
+    if (isStaleWorkspace()) return;
     if (hasBase.status !== 0) {
       await tmuxViews.destroyAll();
       await destroyTmuxViewSessionsForBase(session);
+      if (isStaleWorkspace()) return;
       for (const agent of config.agents) {
         const publicState = tmuxAgentPublicState(agent, { config });
         emitTmuxStatusIfChanged(agent.id, publicState);
@@ -1869,6 +1924,7 @@ async function reconcileTmuxBackend() {
       ["list-panes", "-s", "-t", session, "-F", "#{pane_id}\t#{pane_dead}\t#{window_id}\t#{window_name}"],
       { check: false }
     );
+    if (isStaleWorkspace()) return;
     const panes = parseTmuxPaneTable(panesResult.stdout);
 
     // Zombie session guard: tmux can leave a session shell alive after every
@@ -1883,6 +1939,7 @@ async function reconcileTmuxBackend() {
       await runTmuxAsync(["kill-session", "-t", session], { check: false });
       await tmuxViews.destroyAll();
       await destroyTmuxViewSessionsForBase(session);
+      if (isStaleWorkspace()) return;
       for (const agent of config.agents) {
         emitTmuxStatusIfChanged(agent.id, tmuxAgentPublicState(agent, { config }));
       }
@@ -1892,23 +1949,28 @@ async function reconcileTmuxBackend() {
     const panesByAgentId = parseTmuxAgentPaneTable(panesResult.stdout);
     reconcileRuntimePanesFromTable(config, runtime, panesByAgentId);
     const sessionsResult = await runTmuxAsync(["list-sessions", "-F", "#{session_name}\t#{window_id}"], { check: false });
+    if (isStaleWorkspace()) return;
     const sessionWindows = parseTmuxSessionWindows(sessionsResult.stdout);
 
     for (const agent of config.agents.filter((item) => item.enabled !== false)) {
+      if (isStaleWorkspace()) return;
       const runtimeAgent = runtime.agents?.[agent.id];
       if (!runtimeAgent?.pane) {
         await destroyTmuxViewSessionForAgent(config, agent.id);
+        if (isStaleWorkspace()) return;
         emitTmuxStatusIfChanged(agent.id, tmuxAgentPublicState(agent, { config, runtime }));
         continue;
       }
       const paneState = panes.get(runtimeAgent.pane);
       if (!paneState) {
         await destroyTmuxViewSessionForAgent(config, agent.id);
+        if (isStaleWorkspace()) return;
         emitTmuxStatusIfChanged(agent.id, tmuxAgentPublicState(agent, { config, runtime, dead: null }));
         continue;
       }
       if (paneState.dead) {
         await destroyTmuxViewSessionForAgent(config, agent.id);
+        if (isStaleWorkspace()) return;
         emitTmuxStatusIfChanged(agent.id, tmuxAgentPublicState(agent, { config, runtime, dead: true }));
         continue;
       }
@@ -1917,13 +1979,16 @@ async function reconcileTmuxBackend() {
       const actualViewWindow = expected?.viewSession ? sessionWindows.get(expected.viewSession) : null;
       if (tmuxViews.isAttached(agent.id) && expected?.windowId && actualViewWindow && actualViewWindow !== expected.windowId) {
         await tmuxViews.destroyView(agent.id);
+        if (isStaleWorkspace()) return;
       }
 
       if (!tmuxViews.isAttached(agent.id)) {
         try {
           await ensureTmuxViewForAgent(agent, config, runtime, panes);
+          if (isStaleWorkspace()) return;
         } catch (error) {
           logTmux.warn("failed to attach tmux view", { agentId: agent.id, error });
+          if (isStaleWorkspace()) return;
           emitTmuxStatusIfChanged(agent.id, {
             ...tmuxAgentPublicState(agent, { config, runtime, dead: false, capture: "" }),
             status: "error",
@@ -1966,6 +2031,11 @@ function stopTmuxReconcile() {
     clearInterval(tmuxReconcileTimer);
     tmuxReconcileTimer = null;
   }
+  tmuxReconcileInFlight = false;
+}
+
+function clearTmuxStatusCache() {
+  tmuxLastStatusKey.clear();
 }
 
 function tmuxListAgentStates() {
@@ -2149,16 +2219,22 @@ function tmuxWriteInputFallback(agentId, data) {
   if (!pane || tmuxPaneDead(pane) !== false) {
     throw new Error(`Agent is not running: ${agentId}`);
   }
-  const text = String(data || "");
-  if (!text) {
-    return;
-  }
-  const bufferName = `aiteam-input-${process.pid}-${Date.now()}`;
-  try {
-    runTmux(["load-buffer", "-b", bufferName, "-"], { input: text });
-    runTmux(["paste-buffer", "-b", bufferName, "-t", pane, "-p"]);
-  } finally {
-    runTmux(["delete-buffer", "-b", bufferName], { check: false });
+  for (const action of tmuxInputActions(data)) {
+    if (action.type === "key") {
+      runTmux(["send-keys", "-t", pane, action.key]);
+      continue;
+    }
+    const text = String(action.value || "");
+    if (!text) {
+      continue;
+    }
+    const bufferName = `aiteam-input-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    try {
+      runTmux(["load-buffer", "-b", bufferName, "-"], { input: text });
+      runTmux(["paste-buffer", "-b", bufferName, "-t", pane, "-p"]);
+    } finally {
+      runTmux(["delete-buffer", "-b", bufferName], { check: false });
+    }
   }
 }
 
@@ -2204,6 +2280,14 @@ function tmuxAgentTerminalSnapshot(agentId) {
   const runtime = readRuntime();
   const runtimeAgent = runtime.agents?.[agentId];
   const viewSnapshot = tmuxViews.snapshot(agentId);
+  if (tmuxViews.isAttached(agentId) && viewSnapshot) {
+    return {
+      id: agentId,
+      ...viewSnapshot,
+      source: "tmux-view",
+      backend: "tmux"
+    };
+  }
   if (runtimeAgent?.pane && tmuxPaneDead(runtimeAgent.pane) === false) {
     try {
       const data = tmuxCapturePane(runtimeAgent.pane, TERMINAL_SNAPSHOT_LINES);
@@ -2469,9 +2553,17 @@ function scrollAgent(agentId, lines) {
   return getTerminalBackend().scrollAgent?.(agentId, lines) || false;
 }
 
-async function releaseCurrentWorkspaceBackend() {
+async function releaseCurrentWorkspaceBackend({ terminateAgents = true } = {}) {
   if (selectedBackendName() === "direct-pty") {
-    directStopAllAgents();
+    if (terminateAgents) {
+      directStopAllAgents();
+    } else {
+      for (const [agentId, state] of agents.entries()) {
+        if (state?.workspaceRoot === WORKSPACE_ROOT) {
+          directStopAgent(agentId);
+        }
+      }
+    }
   } else {
     let session = null;
     try {
@@ -2481,11 +2573,13 @@ async function releaseCurrentWorkspaceBackend() {
     }
     stopTmuxReconcile();
     await tmuxViews.reset();
+    clearTmuxStatusCache();
     if (session) {
       await destroyTmuxViewSessionsForBase(session);
+    }
+    if (terminateAgents && session) {
       // Reap agent process trees and tear down the base session so no CLI (and
-      // none of its escaped MCP/helper children) outlives the workspace. This
-      // runs on both workspace switch and app quit.
+      // none of its escaped MCP/helper children) outlives the app.
       await reapBaseSessionProcessTrees(session);
       if (tmuxHasSession(session)) {
         runTmux(["kill-session", "-t", session], { check: false });
@@ -2679,7 +2773,9 @@ function toggleDocumentPinned(relativePath) {
 function git(args) {
   return execFileSync("git", ["-C", WORKSPACE_ROOT, ...args], {
     encoding: "utf8",
-    stdio: ["ignore", "pipe", "ignore"]
+    stdio: ["ignore", "pipe", "ignore"],
+    timeout: 3000,
+    maxBuffer: 2 * 1024 * 1024
   }).trim();
 }
 
@@ -2718,7 +2814,8 @@ async function switchWorkspace(targetRoot) {
     return workspaceInfo();
   }
   stopDocumentsWatcher();
-  await releaseCurrentWorkspaceBackend();
+  bumpWorkspaceEpoch();
+  await releaseCurrentWorkspaceBackend({ terminateAgents: false });
   setWorkspaceRoot(nextRoot);
   ensureWorkspaceDirs();
   startDocumentsWatcher();
@@ -2802,29 +2899,46 @@ app.on("before-quit", (event) => {
     .finally(() => app.quit());
 });
 
-ipcMain.handle("workspace:get", () => workspaceInfo());
-ipcMain.handle("workspace:switch", (_event, targetRoot) => switchWorkspace(targetRoot));
-ipcMain.handle("workspace:choose", () => chooseWorkspace());
+function ipcHandle(channel, handler) {
+  ipcMain.handle(channel, async (event, ...args) => {
+    const started = Date.now();
+    try {
+      return await handler(event, ...args);
+    } catch (error) {
+      log.warn("ipc handler failed", { channel, durationMs: Date.now() - started, error });
+      throw error;
+    } finally {
+      const durationMs = Date.now() - started;
+      if (durationMs > SLOW_OPERATION_LOG_MS) {
+        log.warn("slow ipc handler", { channel, durationMs });
+      }
+    }
+  });
+}
 
-ipcMain.handle("agents:list", () => listAgentStates());
-ipcMain.handle("agents:presets", () => builtinAgentPresets());
-ipcMain.handle("agents:detect", () => detectAllAgentTypes());
-ipcMain.handle("agents:import", (_event, payload, options = {}) => importAgents(payload, options));
-ipcMain.handle("agents:remove", (_event, agentId) => removeAgent(agentId));
-ipcMain.handle("agents:snapshot", (_event, agentId) => agentTerminalSnapshot(agentId));
-ipcMain.handle("agents:start", (_event, agentId) => startAgent(agentId));
-ipcMain.handle("agents:stop", (_event, agentId) => stopAgent(agentId));
-ipcMain.handle("agents:stopAll", () => stopAllAgents());
-ipcMain.handle("agents:input", (_event, agentId, data) => writeToAgent(agentId, data));
-ipcMain.handle("agents:resize", (_event, agentId, cols, rows) => resizeAgent(agentId, cols, rows));
-ipcMain.handle("agents:scroll", (_event, agentId, lines) => scrollAgent(agentId, lines));
-ipcMain.handle("route:send", (_event, message, explicitTargets = [], options = {}) => routeMessage(message, explicitTargets, options));
-ipcMain.handle("tasks:list", () => listTasks());
-ipcMain.handle("documents:list", (_event, folder = "") => listDocuments(folder));
-ipcMain.handle("documents:togglePinned", (_event, relativePath) => toggleDocumentPinned(relativePath));
-ipcMain.handle("git:status", () => getGitStatus());
-ipcMain.handle("shell:openPath", (_event, targetPath) => shell.openPath(targetPath));
-ipcMain.handle("shell:openExternal", (_event, url) => {
+ipcHandle("workspace:get", () => workspaceInfo());
+ipcHandle("workspace:switch", (_event, targetRoot) => switchWorkspace(targetRoot));
+ipcHandle("workspace:choose", () => chooseWorkspace());
+
+ipcHandle("agents:list", () => listAgentStates());
+ipcHandle("agents:presets", () => builtinAgentPresets());
+ipcHandle("agents:detect", () => detectAllAgentTypes());
+ipcHandle("agents:import", (_event, payload, options = {}) => importAgents(payload, options));
+ipcHandle("agents:remove", (_event, agentId) => removeAgent(agentId));
+ipcHandle("agents:snapshot", (_event, agentId) => agentTerminalSnapshot(agentId));
+ipcHandle("agents:start", (_event, agentId) => startAgent(agentId));
+ipcHandle("agents:stop", (_event, agentId) => stopAgent(agentId));
+ipcHandle("agents:stopAll", () => stopAllAgents());
+ipcHandle("agents:input", (_event, agentId, data) => writeToAgent(agentId, data));
+ipcHandle("agents:resize", (_event, agentId, cols, rows) => resizeAgent(agentId, cols, rows));
+ipcHandle("agents:scroll", (_event, agentId, lines) => scrollAgent(agentId, lines));
+ipcHandle("route:send", (_event, message, explicitTargets = [], options = {}) => routeMessage(message, explicitTargets, options));
+ipcHandle("tasks:list", () => listTasks());
+ipcHandle("documents:list", (_event, folder = "") => listDocuments(folder));
+ipcHandle("documents:togglePinned", (_event, relativePath) => toggleDocumentPinned(relativePath));
+ipcHandle("git:status", () => getGitStatus());
+ipcHandle("shell:openPath", (_event, targetPath) => shell.openPath(targetPath));
+ipcHandle("shell:openExternal", (_event, url) => {
   const value = String(url || "");
   if (!/^https?:\/\//i.test(value)) {
     return false;
