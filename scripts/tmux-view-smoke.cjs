@@ -98,6 +98,13 @@ function readLog(rawLog) {
     if (!logOk) {
       throw new Error("Timed out waiting for bracketed paste content in raw log.");
     }
+    const submitOk = await waitFor(() => {
+      const log = readLog(rawLog);
+      return log.includes("你好") && /世界\r?\n/.test(log);
+    }, 5000);
+    if (!submitOk) {
+      throw new Error("Timed out waiting for tmux view paste submit.");
+    }
 
     const historyLines = Array.from({ length: 80 }, (_item, index) => `HISTORY_${index + 1}`).join("\n");
     await manager.pasteAndSubmit(agentId, historyLines);

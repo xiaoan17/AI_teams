@@ -36,7 +36,7 @@ Required behavior:
 
 - ordinary text may use tmux buffer paste;
 - control keys must be converted to tmux key names and sent with `tmux send-keys`;
-- Enter must be sent as `C-m`, not hidden inside a pasted text buffer;
+- Enter must be sent as a tmux key action using the shared submit key (`Enter` as of 2026-06-15), not hidden inside a pasted text buffer;
 - Backspace must be sent as `BSpace`;
 - common cursor/navigation escape sequences must map to `Up`, `Down`, `Left`, `Right`, `Home`, `End`, `Delete`, `PageUp`, and `PageDown`.
 
@@ -56,15 +56,25 @@ Current implementation:
   - asserts the parser output for text, Backspace, Enter, and Up arrow;
   - writes through a real tmux pane and confirms Enter submits to `/bin/cat`.
 
+Important 2026-06-15 update:
+
+- `/bin/cat` smoke coverage is necessary but not sufficient.
+- Real Claude Code and Kimi Code did not submit when AI Teams used `tmux send-keys C-m`.
+- The current submit invariant is `TMUX_SUBMIT_KEY = "Enter"` and every terminal/composer submit path must use that shared constant.
+- See `docs/issues/20260615-real-agent-enter-submit-regression-[finish].md`.
+
 Regression rule:
 
 Do not replace `tmuxInputActions()` with a raw `paste-buffer` of the entire input string. Any edit to terminal input, xterm filtering, tmux fallback, or composer submission must run:
 
 ```bash
 npm run smoke:tmux-input
+npm run smoke:agent-input-queue
 npm run smoke:tmux-view
 npm run smoke:pty
 ```
+
+Also do a manual real-agent submit check after any submit-key or tmux input change.
 
 For broad terminal changes, run the full suite:
 
@@ -172,4 +182,3 @@ Inspect live panes:
 ```bash
 tmux list-panes -a -F '#{session_name}\t#{window_name}\t#{pane_id}\t#{pane_dead}\t#{pane_current_path}\t#{pane_current_command}'
 ```
-

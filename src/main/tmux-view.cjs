@@ -1,5 +1,7 @@
 const { execFile } = require("child_process");
 
+const { TMUX_SUBMIT_KEY } = require("./tmux-input.cjs");
+
 const DEFAULT_REATTACH_DELAYS = [500, 1000, 2000, 4000, 4000];
 const TMUX_COMMAND_TIMEOUT_MS = Math.max(500, Number(process.env.AITEAMS_TMUX_COMMAND_TIMEOUT_MS || 3000));
 const TMUX_COMMAND_MAX_BUFFER_BYTES = 16 * 1024 * 1024;
@@ -33,8 +35,18 @@ function runTmuxAsync(args, options = {}) {
   });
 }
 
+// tmux rewrites "." and ":" in session names (it uses them as target
+// separators), so an agent id like "my.agent" — valid per AGENT_ID_PATTERN —
+// would make the name we build ("…-view-my.agent") differ from what tmux
+// stores ("…-view-my_agent"), and every later lookup by the built name would
+// miss, leaving the view permanently detached. Collapse them to "-" so the
+// generated name matches what tmux keeps. Mirrors slugify() in main.cjs.
+function sanitizeSessionSegment(value) {
+  return String(value || "").replace(/[.:]+/g, "-");
+}
+
 function viewSessionName(baseSession, agentId) {
-  return `${baseSession}-view-${agentId}`;
+  return `${baseSession}-view-${sanitizeSessionSegment(agentId)}`;
 }
 
 function appendBoundedText(current, data, limit) {
@@ -47,6 +59,16 @@ function appendBoundedText(current, data, limit) {
 
 function normalizePasteMessage(message) {
   return String(message || "").replace(/\r\n/g, "\r").replace(/\n/g, "\r");
+}
+
+async function pasteTextToPane(pane, text) {
+  const bufferName = `aiteam-view-paste-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  try {
+    await runTmuxAsync(["load-buffer", "-b", bufferName, "-"], { input: normalizePasteMessage(text) });
+    await runTmuxAsync(["paste-buffer", "-b", bufferName, "-t", pane, "-p"]);
+  } finally {
+    await runTmuxAsync(["delete-buffer", "-b", bufferName], { check: false });
+  }
 }
 
 function safeDispose(disposable) {
@@ -332,12 +354,16 @@ function createTmuxViewManager({
   }
 
   async function pasteAndSubmit(agentId, message, { submitDelayMs = 0 } = {}) {
-    write(agentId, `\x1b[200~${normalizePasteMessage(message)}\x1b[201~`);
+    const state = states.get(agentId);
+    if (!state?.pane || !(await paneIsAlive(state.pane))) {
+      throw new Error(`Agent is not running: ${agentId}`);
+    }
+    await pasteTextToPane(state.pane, message);
     const delay = Math.max(0, Number(submitDelayMs) || 0);
     if (delay > 0) {
       await new Promise((resolve) => setTimeout(resolve, delay));
     }
-    write(agentId, "\r");
+    await runTmuxAsync(["send-keys", "-t", state.pane, TMUX_SUBMIT_KEY]);
   }
 
   function snapshot(agentId) {

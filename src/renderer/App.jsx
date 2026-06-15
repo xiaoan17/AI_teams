@@ -6,6 +6,7 @@ import "@xterm/xterm/css/xterm.css";
 import {
   TERMINAL_SCROLLBACK_LINES,
   appendBoundedTerminalWrite,
+  createTerminalInputBatcher,
   filterTerminalInput,
   filterTerminalOutput,
   handleTerminalWheel,
@@ -511,6 +512,16 @@ function AgentTerminal({ agent, active, hidden, terminalTheme, onFocus, onNotice
       theme: terminalThemeRef.current
     });
     terminal.attachCustomWheelEventHandler((event) => handleTerminalWheel(event, terminal));
+    const inputBatcher = createTerminalInputBatcher({
+      send: (data) => api.sendInput(agent.id, data),
+      onError: (error) => onNotice?.(`${agent.name}: ${error.message}`)
+    });
+    // Force a full glyph-atlas rebuild + viewport repaint. This is EXPENSIVE
+    // (drops the whole texture atlas) so it must only run on low-frequency
+    // events — resize, theme change, font/zoom change, tab becoming visible —
+    // where the atlas genuinely needs rebuilding. It must NOT run per output
+    // write: streaming TUI output would then rebuild the atlas every frame,
+    // defeating xterm's dirty-region incremental render and causing flicker.
     const refreshViewport = () => {
       if (disposed || !termRef.current) return;
       if (refreshFrame) return;
@@ -518,6 +529,7 @@ function AgentTerminal({ agent, active, hidden, terminalTheme, onFocus, onNotice
         refreshFrame = 0;
         if (disposed || !termRef.current || terminal.rows < 1) return;
         try {
+          resetTerminalMouseModes(terminal);
           terminal.clearTextureAtlas?.();
           terminal.refresh(0, terminal.rows - 1);
         } catch {
@@ -528,10 +540,12 @@ function AgentTerminal({ agent, active, hidden, terminalTheme, onFocus, onNotice
     const writeOutput = (data) => {
       const visibleData = filterTerminalOutput(data, pendingTerminalOutputRef);
       if (!visibleData) return false;
-      terminal.write(visibleData, () => {
-        resetTerminalMouseModes(terminal);
-        refreshViewport();
-      });
+      // terminal.write already schedules xterm's own incremental (dirty-region)
+      // render. Do not force a full clearTextureAtlas/refresh here — that is the
+      // flicker source. Mouse-mode-enabling sequences from agent output are
+      // already stripped by filterTerminalOutput, and resetTerminalMouseModes
+      // still runs on init/resize/theme via refreshViewport as a safety net.
+      terminal.write(visibleData);
       return true;
     };
     const flushQueuedOutput = () => {
@@ -565,6 +579,9 @@ function AgentTerminal({ agent, active, hidden, terminalTheme, onFocus, onNotice
     const fitAddon = new FitAddon();
     terminal.loadAddon(fitAddon);
     terminal.open(containerRef.current);
+    const wheelTarget = containerRef.current;
+    const onWheelCapture = (event) => handleTerminalWheel(event, terminal);
+    wheelTarget?.addEventListener("wheel", onWheelCapture, { capture: true, passive: false });
     resetTerminalMouseModes(terminal);
     const fitAndSync = () => {
       if (disposed || !containerRef.current || !termRef.current) return;
@@ -600,9 +617,7 @@ function AgentTerminal({ agent, active, hidden, terminalTheme, onFocus, onNotice
       if (!filteredData) {
         return;
       }
-      api.sendInput(agent.id, filteredData).catch((error) => {
-        onNotice?.(`${agent.name}: ${error.message}`);
-      });
+      inputBatcher.push(filteredData);
     });
     termRef.current = terminal;
     fitRef.current = fitAddon;
@@ -639,6 +654,12 @@ function AgentTerminal({ agent, active, hidden, terminalTheme, onFocus, onNotice
       } catch (error) {
         if (!disposed) {
           onNotice?.(`Could not restore ${agent.name} terminal output: ${error.message}`);
+          // writeOutput → filterTerminalOutput mutates pendingTerminalOutputRef
+          // (it stashes a trailing incomplete escape). If terminal.write threw
+          // mid-restore, that ref keeps a dangling escape fragment that would
+          // corrupt parsing of the next live chunk. Reset it so live output
+          // starts from a clean parser state.
+          pendingTerminalOutputRef.current = "";
           snapshotReadyRef.current = true;
         }
       }
@@ -659,6 +680,8 @@ function AgentTerminal({ agent, active, hidden, terminalTheme, onFocus, onNotice
       resizeTimers.forEach((timer) => clearTimeout(timer));
       observer.disconnect();
       window.removeEventListener("resize", scheduleResize);
+      wheelTarget?.removeEventListener("wheel", onWheelCapture, { capture: true });
+      inputBatcher.dispose({ flush: true });
       terminal.dispose();
       termRef.current = null;
       fitRef.current = null;

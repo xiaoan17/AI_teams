@@ -963,6 +963,14 @@ button {
 
 .terminal-surface .xterm-viewport {
   background: var(--terminal-bg) !important;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.terminal-surface .xterm-viewport::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+  display: none;
 }
 
 .terminal-surface .xterm-screen {

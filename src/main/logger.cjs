@@ -43,6 +43,27 @@ function dayStamp(date = new Date()) {
   return `${y}-${m}-${d}`;
 }
 
+function serializeLogValue(value, seen = new WeakSet()) {
+  if (value instanceof Error) {
+    return { name: value.name, message: value.message, stack: value.stack };
+  }
+  if (!value || typeof value !== "object") {
+    return value;
+  }
+  if (seen.has(value)) {
+    return "[Circular]";
+  }
+  seen.add(value);
+  if (Array.isArray(value)) {
+    return value.map((item) => serializeLogValue(item, seen));
+  }
+  const next = {};
+  for (const [key, item] of Object.entries(value)) {
+    next[key] = serializeLogValue(item, seen);
+  }
+  return next;
+}
+
 // JSON Lines: each message becomes a single line of JSON. electron-log calls
 // the format fn per message and expects it to return the array of args that
 // the transport will write; returning a single pre-serialized string keeps the
@@ -57,7 +78,7 @@ function jsonLineFormat({ message }) {
       ctx = part;
     } else if (part instanceof Error) {
       ctx = Object.assign(ctx || {}, {
-        error: { name: part.name, message: part.message, stack: part.stack }
+        error: serializeLogValue(part)
       });
     } else {
       msg = msg ? `${msg} ${String(part)}` : String(part);
@@ -72,7 +93,7 @@ function jsonLineFormat({ message }) {
     msg
   };
   if (ctx && typeof ctx === "object") {
-    for (const [k, v] of Object.entries(ctx)) {
+    for (const [k, v] of Object.entries(serializeLogValue(ctx))) {
       if (!(k in record)) record[k] = v;
     }
   }

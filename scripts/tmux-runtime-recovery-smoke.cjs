@@ -6,6 +6,7 @@ const {
   parseTmuxAgentPaneTable,
   reconcileRuntimePanesFromTable
 } = require("../src/main/tmux-runtime.cjs");
+const { TMUX_SUBMIT_KEY } = require("../src/main/tmux-input.cjs");
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "aiteams-runtime-recovery-smoke-"));
 const appDir = path.join(root, ".aiteam");
@@ -53,7 +54,7 @@ function pasteAndEnter(pane, text) {
   try {
     runTmux(["load-buffer", "-b", bufferName, "-"], { input: text });
     runTmux(["paste-buffer", "-b", bufferName, "-t", pane, "-p"]);
-    runTmux(["send-keys", "-t", pane, "C-m"]);
+    runTmux(["send-keys", "-t", pane, TMUX_SUBMIT_KEY]);
   } finally {
     runTmux(["delete-buffer", "-b", bufferName], { check: false });
   }

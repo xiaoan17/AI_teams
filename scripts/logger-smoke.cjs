@@ -43,6 +43,7 @@ log.debug("should be filtered", { hidden: true });
 log.info("agent started", { agentId: "a1", pane: "%3" });
 log.warn("reap incomplete", { agentId: "a1", pid: 4242, reason: "timeout" });
 log.error("fatal boom", new Error("kaboom"));
+log.warn("nested error", { channel: "route:send", error: new Error("route failed") });
 
 // electron-log writes synchronously to file by default; give the FS a beat.
 function readLines() {
@@ -94,6 +95,11 @@ setTimeout(() => {
   assert.strictEqual(err.level, "error");
   assert.ok(err.error && err.error.message === "kaboom", "Error serialized with message");
   assert.ok(err.error.stack && err.error.stack.includes("kaboom"), "Error stack captured");
+
+  const nestedErr = records.find((r) => r.msg === "nested error");
+  assert.ok(nestedErr, "nested error record present");
+  assert.strictEqual(nestedErr.channel, "route:send");
+  assert.ok(nestedErr.error && nestedErr.error.message === "route failed", "nested Error serialized with message");
 
   // Cleanup.
   fs.rmSync(tmpUserData, { recursive: true, force: true });

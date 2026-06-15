@@ -3,7 +3,7 @@ const { execFileSync } = require("child_process");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
-const { createTmuxViewManager, runTmuxAsync } = require("./tmux-view.cjs");
+const { createTmuxViewManager, runTmuxAsync, viewSessionName } = require("./tmux-view.cjs");
 const {
   parseTmuxAgentPaneTable,
   parseTmuxPaneTable,
@@ -12,7 +12,7 @@ const {
 } = require("./tmux-runtime.cjs");
 const agentDetect = require("./agent-detect.cjs");
 const { killProcessTree } = require("./process-tree.cjs");
-const { tmuxInputActions } = require("./tmux-input.cjs");
+const { TMUX_SUBMIT_KEY, tmuxInputActions, writeInputActions } = require("./tmux-input.cjs");
 const { initLogger, scoped } = require("./logger.cjs");
 
 // Scoped loggers. Safe to create before initLogger(); electron-log buffers
@@ -54,6 +54,27 @@ const TMUX_RECONCILE_INTERVAL_MS = 5000;
 const TMUX_COMMAND_TIMEOUT_MS = Math.max(500, Number(process.env.AITEAMS_TMUX_COMMAND_TIMEOUT_MS || 3000));
 const TMUX_COMMAND_MAX_BUFFER_BYTES = 16 * 1024 * 1024;
 const SLOW_OPERATION_LOG_MS = Math.max(250, Number(process.env.AITEAMS_SLOW_OPERATION_LOG_MS || 1000));
+// Pre-Enter settle before `send-keys Enter` after a bracketed paste. An Enter fired
+// with no delay races a real TUI's paste state machine and the Enter (and
+// sometimes the pasted text) is swallowed — this is the dropped-Enter bug.
+// `defaultAppAgentConfig` seeds 80 into NEW config files, but every config that
+// predates that key has no routing.submit_delay_ms, so the runtime must fall
+// back to 80 here too — otherwise `Number(undefined || 0) === 0` silently
+// disables the protection for all existing workspaces. Only an explicit numeric
+// value in config (including 0, to opt out) overrides this default.
+const DEFAULT_SUBMIT_DELAY_MS = 80;
+
+// Resolve the pre-Enter submit delay from config, defaulting to
+// DEFAULT_SUBMIT_DELAY_MS when the key is absent. A config value of 0 is honored
+// (explicit opt-out); only undefined/null/non-numeric falls back to the default.
+function resolveSubmitDelayMs(config) {
+  const raw = config?.routing?.submit_delay_ms;
+  const value = Number(raw);
+  if (raw === undefined || raw === null || !Number.isFinite(value)) {
+    return DEFAULT_SUBMIT_DELAY_MS;
+  }
+  return Math.max(0, value);
+}
 const COMMON_EXECUTABLE_DIRS = [
   "/opt/homebrew/bin",
   "/usr/local/bin",
@@ -105,6 +126,8 @@ const waitingPatterns = [
 ];
 
 const agents = new Map();
+const agentInputQueues = new Map();
+const agentInputStates = new Map();
 let mainWindow = null;
 let nodePty = null;
 let documentsWatcher = null;
@@ -330,7 +353,8 @@ function codexArgsDeclarePermissions(args) {
 }
 
 function normalizeCodexAgent(agent) {
-  if (agent?.id !== "codex" && String(agent?.command || "") !== "codex") {
+  const commandName = path.basename(String(agent?.command || "").trim());
+  if (commandName !== "codex") {
     return agent;
   }
   const args = Array.isArray(agent.args) ? agent.args : [];
@@ -373,11 +397,20 @@ function agentRuntimeCommand(agent) {
   return resolveExecutableCommand(agent.command) || agent.command;
 }
 
+// Slug for tmux session names. tmux session names cannot contain "." or ":"
+// (it uses them as target separators and silently rewrites "." to "_"), so a
+// workspace named e.g. ".aiteam-demo" would yield a name we generate as
+// "aiteam-.aiteam-demo-…" but tmux stores as "aiteam-_aiteam-demo-…" — every
+// has-session lookup then misses and new-session collides with "duplicate
+// session". Collapse "." and ":" to "-" so the name we build is exactly what
+// tmux keeps. The sha1 digest in workspaceSessionName still keys uniqueness on
+// the absolute path, so collapsing separators cannot cause cross-workspace
+// collisions.
 function slugify(value) {
   const slug = String(value || "")
     .trim()
     .toLowerCase()
-    .replace(/[^a-z0-9._-]+/g, "-")
+    .replace(/[^a-z0-9_-]+/g, "-")
     .replace(/^-+|-+$/g, "");
   return slug || "workspace";
 }
@@ -481,14 +514,20 @@ function normalizeAgentConfig(config, sourceRoot = null) {
     }
     return normalizeCodexAgent(next);
   }).filter(Boolean);
+  const routing = {
+    ...defaults.routing,
+    ...(config?.routing && typeof config.routing === "object" ? config.routing : {})
+  };
+  const defaultAgentIsUsable = routing.default_agent
+    && agents.some((agent) => agent.id === routing.default_agent && agent.enabled !== false);
+  if (!defaultAgentIsUsable) {
+    routing.default_agent = agents.find((agent) => agent.enabled !== false)?.id || agents[0]?.id || "";
+  }
 
   return {
     ...(config && typeof config === "object" ? config : {}),
     config_schema_version: 1,
-    routing: {
-      ...defaults.routing,
-      ...(config?.routing && typeof config.routing === "object" ? config.routing : {})
-    },
+    routing,
     handoff_template: config?.handoff_template || defaults.handoff_template,
     agents
   };
@@ -517,12 +556,48 @@ function loadWorkspaceDemoConfig() {
   return normalizeAgentConfig(workspaceConfig, WORKSPACE_ROOT);
 }
 
+// Process-wide cache for the normalized app agent config, keyed by the config
+// file's mtime+size. loadConfig() is called on hot paths (agents:list,
+// reconcile, and — before this — every tmux output chunk for status inference),
+// so re-reading + re-parsing + re-writing the file each time stalled the main
+// thread. The cache is invalidated automatically: every writeJson to this path
+// (our own edits via addAgent/removeAgent, or a user hand-editing the file)
+// changes the mtime, so the next read misses and reloads. No manual
+// invalidation call is needed at the write sites.
+let appAgentConfigCache = null;
+
+function configFileStamp(configPath) {
+  try {
+    const stat = fs.statSync(configPath);
+    return `${stat.mtimeMs}:${stat.size}`;
+  } catch {
+    return null;
+  }
+}
+
 function loadAppAgentConfig() {
   const configPath = appAgentConfigPath();
+  const stamp = configFileStamp(configPath);
+  if (stamp !== null && appAgentConfigCache && appAgentConfigCache.path === configPath && appAgentConfigCache.stamp === stamp) {
+    return appAgentConfigCache.config;
+  }
   const existing = readJson(configPath, null);
   if (existing) {
     const normalized = mergeDiscoveredLocalAgents(normalizeAgentConfig(existing));
-    writeJson(configPath, normalized);
+    // Only write back when normalization actually changed the on-disk content.
+    // Rewriting unconditionally on a read path churned the disk every call,
+    // could clobber concurrent user edits, and woke file watchers.
+    const serialized = JSON.stringify(normalized, null, 2) + "\n";
+    let onDisk = "";
+    try {
+      onDisk = fs.readFileSync(configPath, "utf8");
+    } catch {
+      onDisk = "";
+    }
+    if (serialized !== onDisk) {
+      writeJson(configPath, normalized);
+    }
+    appAgentConfigCache = { path: configPath, stamp: configFileStamp(configPath), config: normalized };
     return normalized;
   }
 
@@ -533,6 +608,7 @@ function loadAppAgentConfig() {
       isLegacyDefaultAgentConfig(legacy) ? defaultAppAgentConfig() : normalizeAgentConfig(legacy)
     );
     writeJson(configPath, config);
+    appAgentConfigCache = { path: configPath, stamp: configFileStamp(configPath), config };
     return config;
   }
 
@@ -544,6 +620,7 @@ function loadAppAgentConfig() {
       : defaultAppAgentConfig()
   );
   writeJson(configPath, config);
+  appAgentConfigCache = { path: configPath, stamp: configFileStamp(configPath), config };
   return config;
 }
 
@@ -834,6 +911,29 @@ function readRecentWorkspaces() {
     }));
 }
 
+function mostRecentWorkspaceRoot() {
+  if (process.env.AITEAMS_WORKSPACE_ROOT) {
+    return null;
+  }
+  const stored = readJson(recentWorkspacesPath(), { roots: [] });
+  const roots = Array.isArray(stored?.roots) ? stored.roots : [];
+  const packagedFallbackRoot = path.resolve(app.getPath("userData"), "workspace");
+  for (const root of roots) {
+    try {
+      const normalized = normalizeWorkspaceRoot(root);
+      if ((app.isPackaged || isRunningFromAppBundle()) && path.resolve(normalized) === packagedFallbackRoot) {
+        continue;
+      }
+      if (normalized && fs.existsSync(normalized) && fs.statSync(normalized).isDirectory()) {
+        return normalized;
+      }
+    } catch (_error) {
+      // Ignore stale or malformed recent entries.
+    }
+  }
+  return null;
+}
+
 function writeRecentWorkspaces(roots) {
   const seen = new Set();
   const normalized = roots
@@ -848,8 +948,13 @@ function writeRecentWorkspaces(roots) {
 }
 
 function rememberWorkspace(root) {
+  const normalized = normalizeWorkspaceRoot(root);
+  const packagedFallbackRoot = path.resolve(app.getPath("userData"), "workspace");
+  if ((app.isPackaged || isRunningFromAppBundle()) && path.resolve(normalized) === packagedFallbackRoot) {
+    return;
+  }
   const recent = readRecentWorkspaces().map((item) => item.root);
-  writeRecentWorkspaces([root, ...recent]);
+  writeRecentWorkspaces([normalized, ...recent]);
 }
 
 function ensureWorkspaceDirs() {
@@ -1474,8 +1579,14 @@ function runTmux(args, options = {}) {
   }
 }
 
+// tmux presence on PATH does not change during a run; probing it on every
+// status inference added a needless subprocess spawn. Cache the first result.
+let tmuxAvailableCache = null;
 function tmuxAvailable() {
-  return runTmux(["-V"], { check: false }).status === 0;
+  if (tmuxAvailableCache === null) {
+    tmuxAvailableCache = runTmux(["-V"], { check: false }).status === 0;
+  }
+  return tmuxAvailableCache;
 }
 
 function tmuxHasSession(session) {
@@ -1510,6 +1621,22 @@ function tmuxPaneDead(pane) {
     return null;
   }
   return value === "1";
+}
+
+// Async liveness probe for the input hot path. tmuxPaneDead (above) is the
+// synchronous variant used by setup/reconcile code that already runs off the
+// keystroke path; the renderer's per-keystroke input must NOT block the main
+// thread on a synchronous `tmux display-message`, so writeInputActions awaits
+// this one instead. Returns true=dead, false=alive, null=unknown (pane gone).
+async function tmuxPaneDeadAsync(pane) {
+  const result = await runTmuxAsync(
+    ["display-message", "-p", "-t", pane, "#{pane_dead}"],
+    { check: false }
+  );
+  if (result.status !== 0) {
+    return null;
+  }
+  return result.stdout.trim() === "1";
 }
 
 function tmuxPanePid(pane) {
@@ -1757,6 +1884,57 @@ let tmuxReconcileTimer = null;
 let tmuxReconcileInFlight = false;
 const tmuxLastStatusKey = new Map();
 
+// Status inference for a tmux view is expensive: it spawns `tmux -V` +
+// `tmux has-session` (two synchronous subprocesses), reads config + runtime
+// from disk, captures the pane, and runs regex over it. Running that per output
+// chunk on a streaming TUI froze the Electron main thread (which is also what
+// pushes agent:data to the renderer and pumps input IPC). So inference is
+// throttled per agent: at most one run per window, on a trailing timer. A
+// status pill does not need sub-200ms freshness; terminal output (agent:data)
+// is still emitted immediately and unthrottled.
+const TMUX_STATUS_THROTTLE_MS = Math.max(50, Number(process.env.AITEAMS_TMUX_STATUS_THROTTLE_MS || 200));
+const tmuxStatusThrottleTimers = new Map();
+
+function inferAndEmitTmuxStatus(agentId) {
+  try {
+    const publicState = publicStateForTmuxView(agentId);
+    if (publicState) {
+      emitTmuxStatusIfChanged(agentId, publicState);
+    }
+  } catch (error) {
+    logTmux.warn("failed to infer tmux status", { agentId, error });
+  }
+}
+
+// Coalesce bursts of output into a single trailing status inference per agent.
+function scheduleTmuxStatusInference(agentId) {
+  if (tmuxStatusThrottleTimers.has(agentId)) {
+    return;
+  }
+  const timer = setTimeout(() => {
+    tmuxStatusThrottleTimers.delete(agentId);
+    inferAndEmitTmuxStatus(agentId);
+  }, TMUX_STATUS_THROTTLE_MS);
+  if (typeof timer.unref === "function") {
+    timer.unref();
+  }
+  tmuxStatusThrottleTimers.set(agentId, timer);
+}
+
+// Cancel a pending trailing status inference for one agent. Must run on stop so
+// a timer scheduled by the last output chunk does not fire ~200ms later against
+// a stopped/destroyed pane, and — more importantly — so a fast stop→start of the
+// same agent does not leave a stale timer occupying the Map slot, which would
+// make scheduleTmuxStatusInference() early-return and silently drop the new
+// agent's status updates until the old timer fires.
+function cancelTmuxStatusInference(agentId) {
+  const timer = tmuxStatusThrottleTimers.get(agentId);
+  if (timer) {
+    clearTimeout(timer);
+    tmuxStatusThrottleTimers.delete(agentId);
+  }
+}
+
 function tmuxStatusKey(publicState) {
   return [
     publicState.status || "",
@@ -1802,15 +1980,12 @@ const tmuxViews = createTmuxViewManager({
   replayBufferChars: TERMINAL_REPLAY_BUFFER_CHARS,
   loadReplaySeed: (agentId) => tailFile(readRuntime().agents?.[agentId]?.raw_log, TERMINAL_REPLAY_BUFFER_CHARS),
   onData: (agentId, { data, seq }) => {
+    // Emit terminal output immediately and unthrottled — this is the hot path
+    // that keeps the embedded terminal responsive. Status inference is the
+    // expensive part (tmux spawns + disk reads + regex); defer it to a trailing
+    // throttle so a streaming TUI cannot freeze the main thread per chunk.
     emit("agent:data", { id: agentId, data, seq, source: "tmux-view", backend: "tmux" });
-    try {
-      const publicState = publicStateForTmuxView(agentId);
-      if (publicState) {
-        emitTmuxStatusIfChanged(agentId, publicState);
-      }
-    } catch (error) {
-      logTmux.warn("failed to infer tmux status", { agentId, error });
-    }
+    scheduleTmuxStatusInference(agentId);
   },
   onViewState: (agentId, event) => {
     try {
@@ -1870,7 +2045,9 @@ async function destroyTmuxViewSessionsForBase(baseSession) {
 
 async function destroyTmuxViewSessionForAgent(config, agentId) {
   await tmuxViews.destroyView(agentId);
-  await runTmuxAsync(["kill-session", "-t", `${runtimeSession(config)}-view-${agentId}`], { check: false });
+  // Use the shared name builder so the kill target matches the sanitized name
+  // tmux actually stored (agent ids with "." would otherwise miss).
+  await runTmuxAsync(["kill-session", "-t", viewSessionName(runtimeSession(config), agentId)], { check: false });
 }
 
 async function ensureTmuxViewForAgent(agent, config, runtime, panes = null) {
@@ -2036,6 +2213,10 @@ function stopTmuxReconcile() {
 
 function clearTmuxStatusCache() {
   tmuxLastStatusKey.clear();
+  for (const timer of tmuxStatusThrottleTimers.values()) {
+    clearTimeout(timer);
+  }
+  tmuxStatusThrottleTimers.clear();
 }
 
 function tmuxListAgentStates() {
@@ -2253,19 +2434,45 @@ function injectionProbeNeedle(text) {
   return normalized.slice(-160);
 }
 
-function tmuxWriteInput(agentId, data) {
-  if (!tmuxViews.isAttached(agentId)) {
-    tmuxWriteInputFallback(agentId, data);
-    return;
+// Resolve an agent's tmux pane from memory first. The attached view manager
+// already tracks the pane it bound to (set in ensureView, refreshed by
+// reconcile), so the renderer's per-keystroke input path can skip the
+// synchronous readRuntime() disk read that used to run on every key. Fall back
+// to runtime.json only when no view has been attached yet (rare edge).
+function resolveAgentPane(agentId) {
+  const viewPane = tmuxViews.expectedWindow(agentId)?.pane;
+  if (viewPane) {
+    return viewPane;
   }
-  try {
-    tmuxViews.write(agentId, data);
-  } catch (error) {
-    if (!/Agent is not running/i.test(error.message || "")) {
-      throw error;
+  return readRuntime().agents?.[agentId]?.pane || null;
+}
+
+async function tmuxWriteInput(agentId, data) {
+  // Pane resolution (memory) + liveness probe happen ONCE per batch inside
+  // writeInputActions, not once per keystroke. Each renderer keystroke is its
+  // own call, so a per-action disk read + `tmux display-message` probe added
+  // 3-5 synchronous spawns per key and froze the Electron main thread. Delivery
+  // and the liveness probe now go through runTmuxAsync so neither the spawns nor
+  // the pre-Enter submit delay block the main thread.
+  const submitDelayMs = resolveSubmitDelayMs(loadConfig());
+  await writeInputActions(agentId, data, {
+    resolvePane: resolveAgentPane,
+    isPaneDead: tmuxPaneDeadAsync,
+    inputState: agentInputState(agentId),
+    submitDelayMs,
+    sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+    sendKey: (pane, key) => runTmuxAsync(["send-keys", "-t", pane, key]),
+    sendText: (pane, text) => runTmuxAsync(["send-keys", "-t", pane, "-l", text]),
+    pasteText: async (pane, text) => {
+      const bufferName = `aiteam-input-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+      try {
+        await runTmuxAsync(["load-buffer", "-b", bufferName, "-"], { input: text });
+        await runTmuxAsync(["paste-buffer", "-b", bufferName, "-t", pane, "-p"]);
+      } finally {
+        await runTmuxAsync(["delete-buffer", "-b", bufferName], { check: false });
+      }
     }
-    tmuxWriteInputFallback(agentId, data);
-  }
+  });
 }
 
 function tmuxResizeAgent(agentId, cols, rows) {
@@ -2451,16 +2658,12 @@ async function tmuxPasteAndSubmitAgent(agentId, message) {
   if (dead.status !== 0 || dead.stdout.trim() !== "0") {
     throw new Error(`Agent is not running: ${agentId}`);
   }
-  const submitDelayMs = Number(config.routing?.submit_delay_ms || 0);
-  if (tmuxViews.isAttached(agentId)) {
-    await tmuxViews.pasteAndSubmit(agentId, message, { submitDelayMs });
-  } else {
-    await tmuxPasteTextFallback(pane, message);
-    if (submitDelayMs > 0) {
-      await new Promise((resolve) => setTimeout(resolve, submitDelayMs));
-    }
-    await runTmuxAsync(["send-keys", "-t", pane, "C-m"]);
+  const submitDelayMs = resolveSubmitDelayMs(config);
+  await tmuxPasteTextFallback(pane, message);
+  if (submitDelayMs > 0) {
+    await new Promise((resolve) => setTimeout(resolve, submitDelayMs));
   }
+  await runTmuxAsync(["send-keys", "-t", pane, TMUX_SUBMIT_KEY]);
   if (config.routing?.verify_injection !== false) {
     await verifyTmuxInjection(agentId, pane, message);
   }
@@ -2534,15 +2737,50 @@ function startAgent(agentId) {
 }
 
 function stopAgent(agentId) {
+  agentInputQueues.delete(agentId);
+  agentInputStates.delete(String(agentId || ""));
+  cancelTmuxStatusInference(agentId);
   return getTerminalBackend().stopAgent(agentId);
 }
 
 function stopAllAgents() {
+  agentInputQueues.clear();
+  agentInputStates.clear();
+  for (const timer of tmuxStatusThrottleTimers.values()) {
+    clearTimeout(timer);
+  }
+  tmuxStatusThrottleTimers.clear();
   return getTerminalBackend().stopAll();
 }
 
 function writeToAgent(agentId, data) {
   return getTerminalBackend().writeInput(agentId, data);
+}
+
+function enqueueAgentInput(agentId, operation) {
+  const id = String(agentId || "");
+  const previous = agentInputQueues.get(id) || Promise.resolve();
+  const next = previous
+    .catch(() => {})
+    .then(operation);
+  agentInputQueues.set(id, next);
+  next.finally(() => {
+    if (agentInputQueues.get(id) === next) {
+      agentInputQueues.delete(id);
+    }
+  }).catch(() => {});
+  return next;
+}
+
+function agentInputState(agentId) {
+  const id = String(agentId || "");
+  const current = agentInputStates.get(id);
+  if (current) {
+    return current;
+  }
+  const next = { pastedSinceSubmit: false };
+  agentInputStates.set(id, next);
+  return next;
 }
 
 function resizeAgent(agentId, cols, rows) {
@@ -2554,6 +2792,8 @@ function scrollAgent(agentId, lines) {
 }
 
 async function releaseCurrentWorkspaceBackend({ terminateAgents = true } = {}) {
+  agentInputQueues.clear();
+  agentInputStates.clear();
   if (selectedBackendName() === "direct-pty") {
     if (terminateAgents) {
       directStopAllAgents();
@@ -2640,7 +2880,7 @@ async function routeMessage(message, explicitTargets = [], options = {}) {
 
   const settled = await Promise.allSettled(targets.map(async (target) => {
     try {
-      await backend.pasteAndSubmit(target, finalMessage);
+      await enqueueAgentInput(target, () => backend.pasteAndSubmit(target, finalMessage));
       const publicState = backend.publicState(target);
       if (publicState?.markdownLog) {
         appendMarkdown(publicState.markdownLog, "User Message", finalMessage);
@@ -2858,9 +3098,7 @@ function createWindow() {
 
   const devUrl = process.env.VITE_DEV_SERVER_URL || "http://127.0.0.1:5173";
   const distIndexPath = path.join(APP_ROOT, "dist", "index.html");
-  const shouldLoadBuiltAssets = app.isPackaged || process.env.NODE_ENV === "production" || (
-    process.execPath.includes(".app/Contents/MacOS/") && fs.existsSync(distIndexPath)
-  );
+  const shouldLoadBuiltAssets = app.isPackaged || process.env.NODE_ENV === "production";
   if (shouldLoadBuiltAssets) {
     mainWindow.loadFile(distIndexPath);
   } else {
@@ -2870,6 +3108,10 @@ function createWindow() {
 
 app.whenReady().then(() => {
   initLogger(app);
+  const restoredRoot = mostRecentWorkspaceRoot();
+  if (restoredRoot && restoredRoot !== WORKSPACE_ROOT) {
+    setWorkspaceRoot(restoredRoot);
+  }
   const preparedRoot = prepareWorkspaceRoot(WORKSPACE_ROOT);
   if (preparedRoot !== WORKSPACE_ROOT) {
     setWorkspaceRoot(preparedRoot);
@@ -2887,6 +3129,12 @@ app.on("window-all-closed", () => {
 });
 
 let backendReleaseBeforeQuit = false;
+// Hard ceiling on shutdown cleanup. releaseCurrentWorkspaceBackend() awaits a
+// chain of tmux commands and process-tree reaps; if any one hangs (a wedged
+// child that ignores signals, a stuck tmux server), the app would otherwise
+// never quit — the user clicks quit and the window lingers. Race the cleanup
+// against a timeout and force-exit if it overruns.
+const QUIT_RELEASE_TIMEOUT_MS = Math.max(2000, Number(process.env.AITEAMS_QUIT_TIMEOUT_MS || 8000));
 app.on("before-quit", (event) => {
   if (backendReleaseBeforeQuit) {
     return;
@@ -2894,9 +3142,29 @@ app.on("before-quit", (event) => {
   event.preventDefault();
   backendReleaseBeforeQuit = true;
   stopDocumentsWatcher();
+  let settled = false;
+  const finish = (forced) => {
+    if (settled) {
+      return;
+    }
+    settled = true;
+    if (forced) {
+      log.warn("backend release timed out on quit; forcing exit", { timeoutMs: QUIT_RELEASE_TIMEOUT_MS });
+      app.exit(0);
+      return;
+    }
+    app.quit();
+  };
+  const watchdog = setTimeout(() => finish(true), QUIT_RELEASE_TIMEOUT_MS);
+  if (typeof watchdog.unref === "function") {
+    watchdog.unref();
+  }
   releaseCurrentWorkspaceBackend()
     .catch((error) => log.warn("backend release before quit failed", { error }))
-    .finally(() => app.quit());
+    .finally(() => {
+      clearTimeout(watchdog);
+      finish(false);
+    });
 });
 
 function ipcHandle(channel, handler) {
@@ -2929,7 +3197,7 @@ ipcHandle("agents:snapshot", (_event, agentId) => agentTerminalSnapshot(agentId)
 ipcHandle("agents:start", (_event, agentId) => startAgent(agentId));
 ipcHandle("agents:stop", (_event, agentId) => stopAgent(agentId));
 ipcHandle("agents:stopAll", () => stopAllAgents());
-ipcHandle("agents:input", (_event, agentId, data) => writeToAgent(agentId, data));
+ipcHandle("agents:input", (_event, agentId, data) => enqueueAgentInput(agentId, () => writeToAgent(agentId, data)));
 ipcHandle("agents:resize", (_event, agentId, cols, rows) => resizeAgent(agentId, cols, rows));
 ipcHandle("agents:scroll", (_event, agentId, lines) => scrollAgent(agentId, lines));
 ipcHandle("route:send", (_event, message, explicitTargets = [], options = {}) => routeMessage(message, explicitTargets, options));

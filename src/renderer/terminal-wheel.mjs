@@ -12,7 +12,20 @@ export const TERMINAL_MOUSE_MODE_PARAMS = new Set([
   "1015"
 ]);
 
+export const TERMINAL_KEYBOARD_MODE_PARAMS = new Set([
+  "u"
+]);
+
+export const TERMINAL_ALT_SCREEN_MODE_PARAMS = new Set([
+  "47",
+  "1047",
+  "1048",
+  "1049"
+]);
+
 export const TERMINAL_MOUSE_MODE_RESET = `\x1b[?${[...TERMINAL_MOUSE_MODE_PARAMS].join(";")}l`;
+export const TERMINAL_KEYBOARD_MODE_RESET = "\x1b[?ul";
+export const TERMINAL_ALT_SCREEN_RESET = `\x1b[?${[...TERMINAL_ALT_SCREEN_MODE_PARAMS].join(";")}l`;
 export const TERMINAL_PENDING_OUTPUT_CHARS = 1000000;
 export const TERMINAL_PENDING_WRITE_CHARS = 2000000;
 
@@ -33,7 +46,18 @@ export function appendBoundedTerminalWrite(current, data, maxChars = TERMINAL_PE
     return "";
   }
   const next = `${current || ""}${data || ""}`;
-  return next.length > limit ? next.slice(-limit) : next;
+  if (next.length <= limit) {
+    return next;
+  }
+  // Truncating from the left with slice can cut through the middle of an ANSI
+  // escape, leaving an orphaned tail (e.g. "[38;5;2m…" with the ESC byte gone)
+  // that xterm would render as literal garbage. Realign the left edge to the
+  // first ESC so the kept buffer begins at a clean sequence boundary. Plain
+  // text before that ESC is safe to drop (xterm renders it identically with or
+  // without it); only escapes must not be split.
+  const truncated = next.slice(-limit);
+  const firstEscape = truncated.indexOf("\x1b");
+  return firstEscape > 0 ? truncated.slice(firstEscape) : truncated;
 }
 
 export function wheelEventToScrollLines(event, rowHeight = 16) {
@@ -68,6 +92,77 @@ export function handleTerminalWheel(event, terminal) {
   return false;
 }
 
+export function createTerminalInputBatcher({
+  send,
+  onError,
+  scheduleFrame = (callback) => requestAnimationFrame(callback),
+  cancelFrame = (frame) => cancelAnimationFrame(frame)
+} = {}) {
+  let pending = "";
+  let frame = 0;
+  let disposed = false;
+
+  const deliver = (data) => {
+    if (!data || typeof send !== "function") {
+      return;
+    }
+    Promise.resolve(send(data)).catch((error) => {
+      onError?.(error);
+    });
+  };
+
+  const flush = () => {
+    frame = 0;
+    if (disposed) {
+      return;
+    }
+    const data = pending;
+    pending = "";
+    deliver(data);
+  };
+
+  return {
+    push(data) {
+      if (disposed) {
+        return;
+      }
+      const value = String(data || "");
+      if (!value) {
+        return;
+      }
+      pending += value;
+      if (!frame) {
+        frame = scheduleFrame(flush);
+      }
+    },
+    flush() {
+      if (frame) {
+        cancelFrame(frame);
+        frame = 0;
+      }
+      flush();
+    },
+    dispose({ flush: shouldFlush = true } = {}) {
+      if (disposed) {
+        return;
+      }
+      if (frame) {
+        cancelFrame(frame);
+        frame = 0;
+      }
+      const data = pending;
+      pending = "";
+      disposed = true;
+      if (shouldFlush) {
+        deliver(data);
+      }
+    },
+    pending() {
+      return pending;
+    }
+  };
+}
+
 export function filterTerminalInput(data) {
   return String(data || "")
     .replace(/\x1b\[(?:I|O)/g, "")
@@ -75,6 +170,8 @@ export function filterTerminalInput(data) {
     .replace(/\x1b\[<[\d;]*[mM]/g, "")
     .replace(/\x1b\][\s\S]*?(?:\x07|\x1b\\)/g, "")
     .replace(/\x1bP[\s\S]*?(?:\x07|\x1b\\)/g, "")
+    .replace(/\x1b\[[=>?0-9;]*c/g, "")
+    .replace(/\x1b=[>?0-9;]*c/g, "")
     .replace(/\x1b\[\??[0-9;]*[Rc]/g, "");
 }
 
@@ -108,17 +205,27 @@ export function completeTerminalOutput(data, pendingRef) {
 }
 
 export function filterTerminalOutput(data, pendingRef) {
-  return completeTerminalOutput(String(data || ""), pendingRef).replace(/\x1b\[\?([0-9;]*)([hl])/g, (match, params, action) => {
-    if (action !== "h") return match;
+  return completeTerminalOutput(String(data || ""), pendingRef)
+    .replace(/\x1b\[\?u[hl]/g, "")
+    .replace(/\x1b\[>4;[0-9]+m/g, "")
+    .replace(/\x1b\[\?([0-9;]*)([hl])/g, (match, params, action) => {
     if (!params) return match;
-    const keptParams = params.split(";").filter((param) => param && !TERMINAL_MOUSE_MODE_PARAMS.has(param));
+    const blockedParams = new Set([
+      ...TERMINAL_MOUSE_MODE_PARAMS,
+      ...TERMINAL_ALT_SCREEN_MODE_PARAMS
+    ]);
+    const keptParams = params.split(";").filter((param) => param && !blockedParams.has(param));
     return keptParams.length ? `\x1b[?${keptParams.join(";")}${action}` : "";
   });
 }
 
 export function resetTerminalMouseModes(terminal) {
   try {
+    // Keep embedded panes in xterm's main buffer so local scrollback can collect
+    // agent output, even when the agent TUI tries to use mouse/keyboard/alt modes.
     terminal.write(TERMINAL_MOUSE_MODE_RESET);
+    terminal.write(TERMINAL_KEYBOARD_MODE_RESET);
+    terminal.write(TERMINAL_ALT_SCREEN_RESET);
   } catch {
     // Selection should stay best-effort if the terminal is already disposed.
   }

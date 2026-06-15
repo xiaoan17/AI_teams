@@ -2,6 +2,7 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const { execFileSync } = require("child_process");
+const { TMUX_SUBMIT_KEY } = require("../src/main/tmux-input.cjs");
 
 // Zombie-session recovery smoke.
 //
@@ -115,7 +116,7 @@ async function waitFor(predicate, timeoutMs) {
 
     const rebuiltPane = runTmux(["display-message", "-p", "-t", `${session}:0.0`, "#{pane_id}"]).trim();
     const marker = `ZOMBIE_RECOVERY_${Date.now()}`;
-    runTmux(["send-keys", "-t", rebuiltPane, marker, "C-m"]);
+    runTmux(["send-keys", "-t", rebuiltPane, marker, TMUX_SUBMIT_KEY]);
     const echoed = await waitFor(() => capturePane(rebuiltPane).includes(marker), 5000);
     if (!echoed) {
       console.error(capturePane(rebuiltPane));
