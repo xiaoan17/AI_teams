@@ -7,7 +7,26 @@ Two entry points:
 - Desktop app: Electron + React + xterm.js, one terminal panel per agent.
 - CLI: `aiteam.py`, drives durable agent sessions in tmux panes.
 
-## Install
+## 下载安装（推荐，给使用者）
+
+只想用 App、不打算改代码的话，直接下安装包即可，无需 Node / Python 环境：
+
+1. 打开 [Releases 页面](https://github.com/xiaoan17/AI_teams/releases/latest)，下载最新的 `AI-Teams-<版本>-arm64.dmg`（Apple Silicon / M 系列芯片）。
+2. 双击 dmg，把 **AI Teams** 拖进「应用程序」。
+3. 首次打开：App 未签名，macOS 会拦。在「应用程序」里**右键点 AI Teams → 打开**，弹窗里再点一次「打开」即可（之后双击就能正常启动）。
+   - 若仍提示「已损坏/无法打开」，在终端执行一次：`xattr -dr com.apple.quarantine "/Applications/AI Teams.app"`，然后重新打开。
+
+**前置依赖**：App 用 tmux 托管每个 agent 的终端，所以本机需要装 `tmux`，并装好你要用的 agent CLI（Codex / Claude Code / Kimi 等）：
+
+```bash
+brew install tmux
+```
+
+首次启动时，App 会在 `~/Library/Application Support/ai-teams/agents.json` 写入默认 agent 配置，并扫描你本机已安装的 CLI 自动补充。没装对应 CLI 的 agent 留着禁用即可。
+
+> 目前发布的是 macOS arm64 安装包。Intel Mac / Linux 请走下面的"源码运行"。
+
+## Install（源码运行 / 开发）
 
 Prerequisites: macOS or Linux, Node.js 20+, Python 3.10+, tmux, npm.
 

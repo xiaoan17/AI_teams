@@ -3,6 +3,7 @@ const { execFileSync } = require("child_process");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
+const { StringDecoder } = require("string_decoder");
 const { createTmuxViewManager, runTmuxAsync, viewSessionName } = require("./tmux-view.cjs");
 const {
   parseTmuxAgentPaneTable,
@@ -14,6 +15,30 @@ const agentDetect = require("./agent-detect.cjs");
 const { killProcessTree } = require("./process-tree.cjs");
 const { TMUX_SUBMIT_KEY, tmuxInputActions, writeInputActions } = require("./tmux-input.cjs");
 const { initLogger, scoped } = require("./logger.cjs");
+
+// GUI apps launched from Finder/Dock do NOT inherit the login shell's
+// environment, so LANG/LC_* are typically empty. tmux uses those locale vars to
+// decide whether its client speaks UTF-8; with none set it falls back to a
+// non-UTF-8 client and renders multi-byte glyphs (box-drawing ─│╭╮, CJK) as
+// per-byte garbage — every framed box and the agents' input lines come through
+// as U+FFFD replacement chars. Dev runs from the shell and inherits LANG, so it
+// looks fine; the packaged app does not, which is why the corruption only shows
+// up there and returns on every relaunch. node-pty (agent processes + the tmux
+// view client) and runTmux/runTmuxAsync all spawn with process.env, so seeding
+// a UTF-8 locale here — before any spawn — fixes every downstream consumer at
+// once. Only fill in what's missing; never clobber a locale the user did set.
+function ensureUtf8Locale(env) {
+  const hasLocale = ["LC_ALL", "LC_CTYPE", "LANG"].some((key) => {
+    const value = env[key];
+    return typeof value === "string" && value.trim() !== "";
+  });
+  if (!hasLocale) {
+    env.LANG = "en_US.UTF-8";
+    env.LC_CTYPE = "en_US.UTF-8";
+  }
+  return env;
+}
+ensureUtf8Locale(process.env);
 
 // Scoped loggers. Safe to create before initLogger(); electron-log buffers
 // early messages and flushes them once transports are configured.
@@ -1785,7 +1810,27 @@ function tailFile(file, maxChars = TERMINAL_REPLAY_BUFFER_CHARS) {
     const buffer = Buffer.allocUnsafe(bytesToRead);
     fd = fs.openSync(file, "r");
     const bytesRead = fs.readSync(fd, buffer, 0, bytesToRead, stat.size - bytesToRead);
-    const data = buffer.toString("utf8", 0, bytesRead);
+    // The read window starts at an arbitrary byte offset, so it almost always
+    // begins partway through a multi-byte UTF-8 codepoint (box-drawing, CJK,
+    // emoji). A naive buffer.toString("utf8") emits U+FFFD for that orphaned
+    // head and for any trailing partial codepoint — those replacement chars get
+    // painted into the tmux view as the broken boxes/lines users see in the
+    // input area. Skip the leading bytes until the first UTF-8 start byte (so
+    // the head is a whole codepoint), then decode through StringDecoder, which
+    // buffers — rather than mangles — a trailing incomplete sequence.
+    let start = 0;
+    if (stat.size > bytesToRead) {
+      // Only the head can be mid-codepoint when we sliced from inside the file.
+      // UTF-8 continuation bytes are 0b10xxxxxx (0x80–0xBF); advance past them
+      // to the next leading byte. Bounded so an all-continuation buffer can't
+      // run away.
+      const maxSkip = Math.min(bytesRead, 4);
+      while (start < maxSkip && (buffer[start] & 0xc0) === 0x80) {
+        start += 1;
+      }
+    }
+    const decoder = new StringDecoder("utf8");
+    const data = decoder.write(buffer.subarray(start, bytesRead));
     return data.length > limit ? data.slice(-limit) : data;
   } catch (_error) {
     return "";
@@ -3216,7 +3261,15 @@ function createWindow() {
 
   const devUrl = process.env.VITE_DEV_SERVER_URL || "http://127.0.0.1:5173";
   const distIndexPath = path.join(APP_ROOT, "dist", "index.html");
-  const shouldLoadBuiltAssets = app.isPackaged || process.env.NODE_ENV === "production";
+  // Load built assets whenever we are running from a packaged/bundled app, not
+  // just when Electron's own app.isPackaged is true. The local macOS packager
+  // (scripts/package-macos-local.cjs) ditto-copies Electron.app and injects our
+  // source, which leaves app.isPackaged === false even though we ARE running
+  // from inside a .app bundle. Without isRunningFromAppBundle() here, a
+  // double-clicked .app falls through to loadURL(devUrl) and shows a black
+  // screen when no Vite dev server is running. This mirrors the same guard used
+  // for the workspace-root and recent-workspace paths above.
+  const shouldLoadBuiltAssets = app.isPackaged || isRunningFromAppBundle() || process.env.NODE_ENV === "production";
   if (shouldLoadBuiltAssets) {
     mainWindow.loadFile(distIndexPath);
   } else {
