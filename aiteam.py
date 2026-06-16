@@ -227,7 +227,7 @@ def default_config(root: Path, *, demo: bool = False) -> dict[str, Any]:
                 "id": "claude",
                 "name": "Claude Code",
                 "command": "claude",
-                "args": [],
+                "args": ["--dangerously-skip-permissions"],
                 "cwd": ".",
                 "enabled": False,
                 "permission_mode": "configure-before-start",

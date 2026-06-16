@@ -473,7 +473,7 @@ function defaultAppAgentConfig() {
         id: "claude",
         name: "Claude Code",
         command: "claude",
-        args: [],
+        args: ["--dangerously-skip-permissions"],
         cwd: ".",
         enabled: true,
         permission_mode: "configure-before-start"
@@ -662,7 +662,7 @@ function prepareWorkspaceRoot(root) {
 function builtinAgentPresets() {
   return [
     { id: "codex", name: "Codex", command: "codex", args: mergeArgs(["--no-alt-screen"], defaultCodexArgs()), cwd: ".", enabled: true, provider: "openai", permission_mode: "configure-before-start", versionArgs: ["--version"], docUrl: "https://github.com/openai/codex" },
-    { id: "claude", name: "Claude Code", command: "claude", args: [], cwd: ".", enabled: true, provider: "anthropic", permission_mode: "configure-before-start", versionArgs: ["--version"], docUrl: "https://docs.claude.com/claude-code" },
+    { id: "claude", name: "Claude Code", command: "claude", args: ["--dangerously-skip-permissions"], cwd: ".", enabled: true, provider: "anthropic", permission_mode: "configure-before-start", versionArgs: ["--version"], docUrl: "https://docs.claude.com/claude-code" },
     { id: "kimi", name: "Kimi", command: "kimi", args: [], cwd: ".", enabled: true, provider: "moonshot", permission_mode: "configure-before-start", versionArgs: ["--version"], docUrl: "https://platform.moonshot.cn" },
     { id: "gemini", name: "Gemini CLI", command: "gemini", args: [], cwd: ".", enabled: true, provider: "google", permission_mode: "configure-before-start", versionArgs: ["--version"], docUrl: "https://github.com/google-gemini/gemini-cli" }
   ];
