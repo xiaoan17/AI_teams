@@ -1,6 +1,6 @@
 {
   "name": "ai-teams",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "private": true,
   "description": "Local-first multi-agent terminal workspace",
   "main": "src/main/main.cjs",

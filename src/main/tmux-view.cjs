@@ -3,6 +3,10 @@ const { execFile } = require("child_process");
 const { TMUX_SUBMIT_KEY } = require("./tmux-input.cjs");
 
 const DEFAULT_REATTACH_DELAYS = [500, 1000, 2000, 4000, 4000];
+// A window drag emits a resize per animation frame; coalesce the tmux
+// resize-window command onto a trailing edge so we issue one spawn per settle,
+// not one per frame. Short enough to feel immediate after the drag stops.
+const RESIZE_WINDOW_DEBOUNCE_MS = 60;
 const TMUX_COMMAND_TIMEOUT_MS = Math.max(500, Number(process.env.AITEAMS_TMUX_COMMAND_TIMEOUT_MS || 3000));
 const TMUX_COMMAND_MAX_BUFFER_BYTES = 16 * 1024 * 1024;
 
@@ -108,6 +112,7 @@ function createTmuxViewManager({
       replayTruncated: false,
       reattachAttempts: 0,
       reattachTimer: null,
+      resizeTimer: null,
       ensurePromise: null,
       destroying: false,
       cols: 96,
@@ -127,6 +132,29 @@ function createTmuxViewManager({
     if (state.reattachTimer) {
       clearTimeout(state.reattachTimer);
       state.reattachTimer = null;
+    }
+  }
+
+  // Push the agent pane to state.cols/rows by resizing the grouped BASE window.
+  // The agent process runs in the base window; the view session is grouped to it
+  // (new-session -t base), so the size that matters for the TUI's own redraw is
+  // the base window's. With window-size manual this is the only lever, and it
+  // sticks across client events (verified tmux 3.6a). Best-effort: a failure just
+  // means this resize did not land; the next one retries.
+  function resizeBaseWindow(state) {
+    if (!state?.baseSession || !state.windowId) {
+      return Promise.resolve();
+    }
+    return runTmuxAsync(
+      ["resize-window", "-t", `${state.baseSession}:${state.windowId}`, "-x", String(state.cols), "-y", String(state.rows)],
+      { check: false }
+    );
+  }
+
+  function clearResizeTimer(state) {
+    if (state.resizeTimer) {
+      clearTimeout(state.resizeTimer);
+      state.resizeTimer = null;
     }
   }
 
@@ -271,10 +299,23 @@ function createTmuxViewManager({
       await runTmuxAsync(["set-option", "-t", nextState.viewSession, "prefix", "None"], { check: false });
       await runTmuxAsync(["set-option", "-t", nextState.viewSession, "prefix2", "None"], { check: false });
       await runTmuxAsync(["select-window", "-t", `${nextState.viewSession}:${nextState.windowId}`]);
-      await runTmuxAsync(["set-option", "-w", "-t", `${nextState.viewSession}:${nextState.windowId}`, "window-size", "latest"], { check: false });
+      // True-TUI mode: the panel is the sole authority on size. `latest`/`largest`
+      // re-derive the shared window size from whatever client is most-recently
+      // active, which drifts when a stray client touches the grouped base session
+      // and leaves the agent drawing its TUI at a width xterm is not rendering at
+      // (misaligned box-drawing). `manual` pins the size to whatever we last set
+      // via resize-window and ignores client sizes entirely. Verified on tmux 3.6a:
+      // resize-window on the grouped base window sticks with a live attached view
+      // client. resizeBaseWindow() is the only thing that moves the size after this.
+      await runTmuxAsync(["set-option", "-w", "-t", `${nextState.viewSession}:${nextState.windowId}`, "window-size", "manual"], { check: false });
       nextState.replayBuffer = String(loadReplaySeed?.(agentId) || "");
       nextState.replayTruncated = nextState.replayBuffer.length >= replayBufferChars;
       await spawnAttach(nextState);
+      // Drive the agent's pane to the requested panel size now that a client is
+      // attached. The agent process lives in the base window; the view session is
+      // grouped to it, so resizing the base window is what fires SIGWINCH to the
+      // agent and makes its TUI redraw at the renderer's cols/rows.
+      await resizeBaseWindow(nextState);
     })();
     try {
       await state.ensurePromise;
@@ -292,6 +333,7 @@ function createTmuxViewManager({
       return;
     }
     clearReattachTimer(state);
+    clearResizeTimer(state);
     state.destroying = true;
     safeDispose(state.onDataDisposable);
     safeDispose(state.onExitDisposable);
@@ -350,6 +392,22 @@ function createTmuxViewManager({
     state.rows = Math.max(5, rows);
     if (state.pty) {
       state.pty.resize(state.cols, state.rows);
+    }
+    // pty.resize above only changes the view client's PTY winsize; with
+    // window-size manual the shared base window does NOT follow it, so the agent
+    // would keep drawing at the old size. Drive the base window explicitly. A
+    // window drag fires resize() once per animation frame, so debounce the tmux
+    // command (the pty.resize stays immediate to keep xterm's own grid in sync).
+    clearResizeTimer(state);
+    state.resizeTimer = setTimeout(() => {
+      state.resizeTimer = null;
+      if (states.get(agentId) !== state || state.destroying) {
+        return;
+      }
+      void resizeBaseWindow(state);
+    }, RESIZE_WINDOW_DEBOUNCE_MS);
+    if (typeof state.resizeTimer.unref === "function") {
+      state.resizeTimer.unref();
     }
   }
 

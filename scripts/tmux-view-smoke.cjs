@@ -69,6 +69,7 @@ function readLog(rawLog) {
 
     runTmux(["new-session", "-d", "-s", session, "-n", agentId, "-c", root, "/bin/cat"]);
     const pane = runTmux(["display-message", "-p", "-t", `${session}:0.0`, "#{pane_id}"]).trim();
+    const windowId = runTmux(["display-message", "-p", "-t", `${session}:0`, "#{window_id}"]).trim();
     runTmux(["pipe-pane", "-o", "-t", pane, `cat >> ${shellQuote(rawLog)}`]);
 
     let output = "";
@@ -88,6 +89,28 @@ function readLog(rawLog) {
     const echoed = await waitFor(() => output.includes(echoMessage), 5000);
     if (!echoed) {
       throw new Error("Timed out waiting for tmux view pty echo.");
+    }
+
+    // Regression test for True-TUI sizing: manager.resize must drive the agent's
+    // BASE window to the requested cols/rows (via resize-window on the grouped
+    // base window with window-size manual). This is what keeps the agent's TUI
+    // drawing at exactly the size xterm renders — the fix for misaligned boxes.
+    const baseWindowSize = async () => {
+      const result = await runTmuxAsync(
+        ["display-message", "-p", "-t", `${session}:${windowId}`, "#{window_width}x#{window_height}"],
+        { check: false }
+      );
+      return result.status === 0 ? result.stdout.trim() : "";
+    };
+    manager.resize(agentId, 100, 30);
+    const resized = await waitFor(async () => (await baseWindowSize()) === "100x30", 3000);
+    if (!resized) {
+      throw new Error(`resize must drive the base window to 100x30; got ${await baseWindowSize()}`);
+    }
+    manager.resize(agentId, 88, 26);
+    const resizedAgain = await waitFor(async () => (await baseWindowSize()) === "88x26", 3000);
+    if (!resizedAgain) {
+      throw new Error(`resize must re-drive the base window to 88x26; got ${await baseWindowSize()}`);
     }
 
     await manager.pasteAndSubmit(agentId, pasteMessage);
@@ -111,6 +134,22 @@ function readLog(rawLog) {
     const historyOk = await waitFor(() => readLog(rawLog).includes("HISTORY_80"), 5000);
     if (!historyOk) {
       throw new Error("Timed out waiting for history lines in raw log.");
+    }
+
+    // True-TUI mode: redraw control bytes must reach the renderer (onData)
+    // verbatim — the manager must NOT rewrite/collapse cursor or clear-line
+    // sequences (that rewriting was the old transcript-mode corruption source).
+    // Note: `send-keys -l` renders a real ESC as the literal two chars "^[", so we
+    // assert verbatim delivery of the caret-form payload tmux actually emits,
+    // including the clear-line ("[2K") and cursor-up ("[A") markers, unmodified.
+    output = "";
+    runTmux(["send-keys", "-t", pane, "-l", "\x1b[A\r\x1b[2KOVERWRITTEN_NEW"]);
+    const redrawOk = await waitFor(() => output.includes("OVERWRITTEN_NEW"), 5000);
+    if (!redrawOk) {
+      throw new Error("Timed out waiting for replacement redraw line.");
+    }
+    if (!output.includes("[2K") || !output.includes("[A")) {
+      throw new Error("Manager must deliver cursor-up + clear-line redraw bytes verbatim to onData (no rewriting).");
     }
 
     await manager.scroll(agentId, -5);

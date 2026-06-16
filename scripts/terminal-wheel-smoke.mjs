@@ -1,8 +1,5 @@
 import assert from "assert";
 import {
-  TERMINAL_ALT_SCREEN_RESET,
-  TERMINAL_MOUSE_MODE_RESET,
-  TERMINAL_KEYBOARD_MODE_RESET,
   TERMINAL_PENDING_OUTPUT_CHARS,
   TERMINAL_PENDING_WRITE_CHARS,
   TERMINAL_SCROLLBACK_LINES,
@@ -19,12 +16,6 @@ import {
 assert.strictEqual(TERMINAL_SCROLLBACK_LINES, 20000);
 assert.strictEqual(TERMINAL_PENDING_OUTPUT_CHARS, 1000000);
 assert.strictEqual(TERMINAL_PENDING_WRITE_CHARS, 2000000);
-assert.ok(TERMINAL_MOUSE_MODE_RESET.startsWith("\x1b[?"));
-assert.ok(TERMINAL_MOUSE_MODE_RESET.includes("1000"));
-assert.ok(TERMINAL_MOUSE_MODE_RESET.endsWith("l"));
-assert.strictEqual(TERMINAL_KEYBOARD_MODE_RESET, "\x1b[?ul");
-assert.ok(TERMINAL_ALT_SCREEN_RESET.includes("1049"));
-assert.ok(TERMINAL_ALT_SCREEN_RESET.endsWith("l"));
 assert.strictEqual(wheelEventToScrollLines({ deltaY: 32, deltaMode: 0 }, 16), 2);
 assert.strictEqual(wheelEventToScrollLines({ deltaY: -8, deltaMode: 1 }, 16), -8);
 assert.strictEqual(wheelEventToScrollLines({ deltaY: 1, deltaMode: 2, pageLines: 30 }, 16), 30);
@@ -95,24 +86,29 @@ assert.strictEqual(handleTerminalWheel({
 }, terminal), false);
 assert.deepStrictEqual(zeroCalls, ["preventDefault", "stopPropagation"]);
 
+// True-TUI mode: filterTerminalOutput passes agent bytes through verbatim — it
+// no longer strips mouse/alt-screen modes or rewrites cursor sequences. The ONLY
+// transform is holding back a trailing incomplete escape until the rest arrives.
 const pendingOutput = { current: "" };
-assert.strictEqual(filterTerminalOutput("a\x1b[?1000hbc", pendingOutput), "abc");
+assert.strictEqual(filterTerminalOutput("a\x1b[?1000hbc", pendingOutput), "a\x1b[?1000hbc");
 assert.strictEqual(pendingOutput.current, "");
-assert.strictEqual(filterTerminalOutput("a\x1b[?25;1006hbc", pendingOutput), "a\x1b[?25hbc");
-assert.strictEqual(filterTerminalOutput("a\x1b[?1006;25hbc", pendingOutput), "a\x1b[?25hbc");
-assert.strictEqual(filterTerminalOutput("a\x1b[?1000lbc", pendingOutput), "abc");
-assert.strictEqual(filterTerminalOutput("a\x1b[?uhbc", pendingOutput), "abc");
-assert.strictEqual(filterTerminalOutput("a\x1b[?ulbc", pendingOutput), "abc");
-assert.strictEqual(filterTerminalOutput("a\x1b[>4;2mbc", pendingOutput), "abc");
-assert.strictEqual(filterTerminalOutput("a\x1b[?1049hbc", pendingOutput), "abc");
-assert.strictEqual(filterTerminalOutput("a\x1b[?1049lbc", pendingOutput), "abc");
-assert.strictEqual(filterTerminalOutput("a\x1b[?25;1049hbc", pendingOutput), "a\x1b[?25hbc");
-assert.strictEqual(filterTerminalOutput("a\x1b[?1049;25lbc", pendingOutput), "a\x1b[?25lbc");
+assert.strictEqual(filterTerminalOutput("a\x1b[?1049hbc", pendingOutput), "a\x1b[?1049hbc");
+assert.strictEqual(filterTerminalOutput("a\x1b[?1049lbc", pendingOutput), "a\x1b[?1049lbc");
+assert.strictEqual(
+  filterTerminalOutput("old\r\n\x1b[A\r\x1b[2Knew", pendingOutput),
+  "old\r\n\x1b[A\r\x1b[2Knew",
+  "cursor-up + clear-line redraws must reach xterm verbatim so the TUI repaints in place"
+);
+assert.strictEqual(
+  filterTerminalOutput("draft\rfinal", pendingOutput),
+  "draft\rfinal",
+  "carriage return must pass through unchanged so the TUI can overwrite the line"
+);
 
 const splitPending = { current: "" };
 assert.strictEqual(filterTerminalOutput("hello\x1b[?100", splitPending), "hello");
 assert.strictEqual(splitPending.current, "\x1b[?100");
-assert.strictEqual(filterTerminalOutput("0h world", splitPending), " world");
+assert.strictEqual(filterTerminalOutput("0h world", splitPending), "\x1b[?1000h world");
 assert.strictEqual(splitPending.current, "");
 assert.strictEqual(incompleteEscapeStart("abc\x1b["), 3);
 assert.strictEqual(incompleteEscapeStart("abc\x1b[?1000h"), -1);

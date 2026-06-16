@@ -97,16 +97,18 @@ function sleep(ms) {
   assert.strictEqual(counts.sendKey, 3, "three key actions (BSpace, Enter, Up) should each send once");
   assert.strictEqual(counts.sendText, 2, "two ordinary text runs should each use literal send-keys");
   assert.strictEqual(counts.pasteText, 0, "ordinary typing should not use tmux paste-buffer");
-  assert.strictEqual(counts.sleep, 0, "ordinary typing should not incur the paste submit delay");
+  assert.strictEqual(counts.sleep, 1, "Enter after ordinary text should incur the submit settle delay");
   const cmIndex = order.indexOf("key:Enter");
-  assert.strictEqual(order[cmIndex - 1], "text:cd", "ordinary text should precede Enter without a delay");
+  assert.strictEqual(order[cmIndex - 1], "sleep:80", "submit settle delay should be immediately before Enter");
+  assert.strictEqual(order[cmIndex - 2], "text:cd", "ordinary text should precede the submit settle delay");
   // The trailing Up arrow is a bare key with no preceding fresh paste, so it
   // must NOT incur a delay.
   assert.strictEqual(order[order.length - 1], "key:Up", "bare arrow key after submit must not be delayed");
 
   // Real xterm input commonly arrives as separate IPC calls: one batch for
   // printable text and a later batch for Enter. Ordinary text uses literal
-  // send-keys and must not pay the bracketed-paste settle delay.
+  // send-keys, but real agent TUIs still need a short settle before submit so
+  // Enter is not swallowed while the input line is updating.
   const splitState = {};
   const splitOrder = [];
   const splitDeps = {
@@ -128,15 +130,17 @@ function sleep(ms) {
     }
   };
   await writeInputActions("codex-2", "hello", splitDeps);
+  assert.strictEqual(splitState.contentSinceSubmit, true, "text-only batch should mark pending editable content");
   assert.notStrictEqual(splitState.pastedSinceSubmit, true, "text-only batch should not mark pending pasted content");
   await writeInputActions("codex-2", "\x1b", splitDeps);
   assert.strictEqual(splitState.pendingInput, "\x1b", "split escape start should be held until the next batch");
   await writeInputActions("codex-2", "[109;5u", splitDeps);
   assert.deepStrictEqual(
     splitOrder,
-    ["text:hello", "key:Enter"],
-    "split text and split CSI-u Enter batches should submit without paste delay"
+    ["text:hello", "sleep:80", "key:Enter"],
+    "split text and split CSI-u Enter batches should settle immediately before submit"
   );
+  assert.strictEqual(splitState.contentSinceSubmit, false, "submit should clear pending editable content");
   assert.strictEqual(splitState.pastedSinceSubmit, false, "submit should clear pending pasted content");
 
   const pasteState = {};
@@ -160,6 +164,7 @@ function sleep(ms) {
     }
   };
   await writeInputActions("codex-2", "\x1b[200~pasted\nbody\x1b[201~", pasteDeps);
+  assert.strictEqual(pasteState.contentSinceSubmit, true, "explicit bracketed paste should mark pending editable content");
   assert.strictEqual(pasteState.pastedSinceSubmit, true, "explicit bracketed paste should mark pending pasted content");
   await writeInputActions("codex-2", "\r", pasteDeps);
   assert.deepStrictEqual(
@@ -192,7 +197,8 @@ function sleep(ms) {
   });
   assert.deepStrictEqual(splitCursorKeys, ["Right"], "split SS3 cursor key should be reconstructed");
 
-  // A keystroke batch with no paste (pure arrow navigation) must never delay.
+  // A keystroke batch with no editable content (pure arrow navigation) must not
+  // delay; the trailing Enter has no fresh text/paste to settle.
   let bareSleeps = 0;
   await writeInputActions("codex-2", "\x1b[A\x1b[B\r", {
     submitDelayMs: 80,

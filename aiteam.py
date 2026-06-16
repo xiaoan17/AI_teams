@@ -419,6 +419,7 @@ def setup_agent_runtime(root: Path, agent: dict[str, Any], pane: str) -> dict[st
     session_dir = app_path(root, "sessions", agent["id"])
     session_dir.mkdir(parents=True, exist_ok=True)
     raw_log = session_dir / f"{stamp}.ansi.log"
+    transcript_log = session_dir / f"{stamp}.txt"
     md_log = session_dir / f"{stamp}.md"
     md_log.write_text(
         "\n".join(
@@ -430,15 +431,18 @@ def setup_agent_runtime(root: Path, agent: dict[str, Any], pane: str) -> dict[st
                 f"- Command: `{shell_command(agent)}`",
                 f"- CWD: `{agent.get('cwd')}`",
                 f"- Raw terminal log: `{raw_log}`",
+                f"- Text transcript: `{transcript_log}`",
                 "",
             ]
         ),
         encoding="utf-8",
     )
+    transcript_log.write_text("", encoding="utf-8")
     run_tmux(["pipe-pane", "-o", "-t", pane, f"cat >> {shlex.quote(str(raw_log))}"])
     return {
         "pane": pane,
         "raw_log": str(raw_log),
+        "transcript_log": str(transcript_log),
         "markdown_log": str(md_log),
         "started_at": utc_now(),
     }

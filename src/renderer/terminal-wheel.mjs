@@ -1,31 +1,5 @@
 export const TERMINAL_SCROLLBACK_LINES = 20000;
 
-export const TERMINAL_MOUSE_MODE_PARAMS = new Set([
-  "9",
-  "1000",
-  "1001",
-  "1002",
-  "1003",
-  "1004",
-  "1005",
-  "1006",
-  "1015"
-]);
-
-export const TERMINAL_KEYBOARD_MODE_PARAMS = new Set([
-  "u"
-]);
-
-export const TERMINAL_ALT_SCREEN_MODE_PARAMS = new Set([
-  "47",
-  "1047",
-  "1048",
-  "1049"
-]);
-
-export const TERMINAL_MOUSE_MODE_RESET = `\x1b[?${[...TERMINAL_MOUSE_MODE_PARAMS].join(";")}l`;
-export const TERMINAL_KEYBOARD_MODE_RESET = "\x1b[?ul";
-export const TERMINAL_ALT_SCREEN_RESET = `\x1b[?${[...TERMINAL_ALT_SCREEN_MODE_PARAMS].join(";")}l`;
 export const TERMINAL_PENDING_OUTPUT_CHARS = 1000000;
 export const TERMINAL_PENDING_WRITE_CHARS = 2000000;
 
@@ -205,28 +179,12 @@ export function completeTerminalOutput(data, pendingRef) {
 }
 
 export function filterTerminalOutput(data, pendingRef) {
-  return completeTerminalOutput(String(data || ""), pendingRef)
-    .replace(/\x1b\[\?u[hl]/g, "")
-    .replace(/\x1b\[>4;[0-9]+m/g, "")
-    .replace(/\x1b\[\?([0-9;]*)([hl])/g, (match, params, action) => {
-    if (!params) return match;
-    const blockedParams = new Set([
-      ...TERMINAL_MOUSE_MODE_PARAMS,
-      ...TERMINAL_ALT_SCREEN_MODE_PARAMS
-    ]);
-    const keptParams = params.split(";").filter((param) => param && !blockedParams.has(param));
-    return keptParams.length ? `\x1b[?${keptParams.join(";")}${action}` : "";
-  });
-}
-
-export function resetTerminalMouseModes(terminal) {
-  try {
-    // Keep embedded panes in xterm's main buffer so local scrollback can collect
-    // agent output, even when the agent TUI tries to use mouse/keyboard/alt modes.
-    terminal.write(TERMINAL_MOUSE_MODE_RESET);
-    terminal.write(TERMINAL_KEYBOARD_MODE_RESET);
-    terminal.write(TERMINAL_ALT_SCREEN_RESET);
-  } catch {
-    // Selection should stay best-effort if the terminal is already disposed.
-  }
+  // True-TUI mode: xterm is a real terminal. Agent output (alt-screen enter/leave,
+  // cursor positioning, clear-line, mouse-mode enables, SGR) must reach xterm
+  // verbatim — rewriting any of it is what produced misaligned boxes, ghosted
+  // lines, and stacked status rows. The ONLY transform we keep is cross-chunk
+  // escape completion: writing a half-finished escape sequence to xterm corrupts
+  // its parser state, so a trailing incomplete escape is held back in pendingRef
+  // until the rest of it arrives. That is mode-independent and must stay.
+  return completeTerminalOutput(String(data || ""), pendingRef);
 }

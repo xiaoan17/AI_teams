@@ -10,7 +10,6 @@ import {
   filterTerminalInput,
   filterTerminalOutput,
   handleTerminalWheel,
-  resetTerminalMouseModes,
   trimPendingOutputQueue
 } from "./terminal-wheel.mjs";
 import "./styles.css";
@@ -191,6 +190,12 @@ const browserPreviewApi = {
 
 const api = window.aiTeams || browserPreviewApi;
 
+// Restore snapshots come from `tmux capture-pane` (newline-joined screen text
+// with SGR, see tmuxAgentTerminalSnapshot). Prefix a RIS full reset so the
+// captured screen paints onto a clean slate, and normalize bare \n to \r\n since
+// capture output is line-joined, not raw PTY bytes. This must only ever run over
+// capture-pane text — never over raw PTY byte streams (the \n→\r\n rewrite would
+// corrupt those).
 function snapshotToTerminalData(data) {
   return `\x1bc${String(data || "").replace(/\r?\n/g, "\r\n")}`;
 }
@@ -484,7 +489,21 @@ function AgentTerminal({ agent, active, hidden, terminalTheme, onFocus, onNotice
   const pendingWriteSeqRef = useRef(0);
   const writeFrameRef = useRef(0);
   const snapshotReadyRef = useRef(false);
+  const snapshotReplayInFlightRef = useRef(false);
+  const hiddenRef = useRef(hidden);
   const terminalThemeRef = useRef(terminalTheme);
+
+  useEffect(() => {
+    hiddenRef.current = hidden;
+  }, [hidden]);
+
+  const queuePendingOutput = useCallback((data, seq = 0) => {
+    const text = String(data || "");
+    if (!text) return;
+    pendingOutputRef.current.push({ data: text, seq });
+    pendingOutputCharsRef.current += text.length;
+    pendingOutputCharsRef.current = trimPendingOutputQueue(pendingOutputRef.current, pendingOutputCharsRef.current);
+  }, []);
 
   useEffect(() => {
     if (!containerRef.current || termRef.current) return;
@@ -492,6 +511,7 @@ function AgentTerminal({ agent, active, hidden, terminalTheme, onFocus, onNotice
     let resizeFrame = 0;
     let refreshFrame = 0;
     let lastResizeKey = "";
+    let truncatedNoticeShown = false;
     lastSeqRef.current = 0;
     pendingOutputRef.current = [];
     pendingOutputCharsRef.current = 0;
@@ -500,6 +520,7 @@ function AgentTerminal({ agent, active, hidden, terminalTheme, onFocus, onNotice
     pendingWriteSeqRef.current = 0;
     writeFrameRef.current = 0;
     snapshotReadyRef.current = false;
+    snapshotReplayInFlightRef.current = false;
     const terminal = new Terminal({
       cursorBlink: true,
       convertEol: false,
@@ -529,7 +550,6 @@ function AgentTerminal({ agent, active, hidden, terminalTheme, onFocus, onNotice
         refreshFrame = 0;
         if (disposed || !termRef.current || terminal.rows < 1) return;
         try {
-          resetTerminalMouseModes(terminal);
           terminal.clearTextureAtlas?.();
           terminal.refresh(0, terminal.rows - 1);
         } catch {
@@ -540,11 +560,12 @@ function AgentTerminal({ agent, active, hidden, terminalTheme, onFocus, onNotice
     const writeOutput = (data) => {
       const visibleData = filterTerminalOutput(data, pendingTerminalOutputRef);
       if (!visibleData) return false;
-      // terminal.write already schedules xterm's own incremental (dirty-region)
-      // render. Do not force a full clearTextureAtlas/refresh here — that is the
-      // flicker source. Mouse-mode-enabling sequences from agent output are
-      // already stripped by filterTerminalOutput, and resetTerminalMouseModes
-      // still runs on init/resize/theme via refreshViewport as a safety net.
+      // True-TUI mode: write raw agent bytes straight to xterm. terminal.write
+      // schedules xterm's own incremental (dirty-region) render; do NOT force a
+      // clearTextureAtlas/refresh here — that full rebuild per chunk is the
+      // flicker source. filterTerminalOutput only buffers a trailing incomplete
+      // escape; it no longer rewrites cursor/alt-screen/mouse sequences, so the
+      // TUI's own redraws reach xterm intact.
       terminal.write(visibleData);
       return true;
     };
@@ -576,28 +597,94 @@ function AgentTerminal({ agent, active, hidden, terminalTheme, onFocus, onNotice
         writeFrameRef.current = requestAnimationFrame(flushQueuedOutput);
       }
     };
+    const replayPendingOutput = () => {
+      for (const pending of pendingOutputRef.current) {
+        if (pending.seq && pending.seq <= lastSeqRef.current) continue;
+        queueOutput(pending.data, pending.seq);
+        if (pending.seq) {
+          lastSeqRef.current = Math.max(lastSeqRef.current, pending.seq);
+        }
+      }
+      pendingOutputRef.current = [];
+      pendingOutputCharsRef.current = 0;
+    };
     const fitAddon = new FitAddon();
     terminal.loadAddon(fitAddon);
     terminal.open(containerRef.current);
     const wheelTarget = containerRef.current;
     const onWheelCapture = (event) => handleTerminalWheel(event, terminal);
     wheelTarget?.addEventListener("wheel", onWheelCapture, { capture: true, passive: false });
-    resetTerminalMouseModes(terminal);
+    const replaySnapshot = async ({ noticeTruncated = false, reason = "restore" } = {}) => {
+      if (snapshotReplayInFlightRef.current) return;
+      snapshotReplayInFlightRef.current = true;
+      try {
+        if (reason === "restore") {
+          snapshotReadyRef.current = false;
+        }
+        await new Promise((resolve) => requestAnimationFrame(resolve));
+        if (disposed || !termRef.current) return;
+        fitAndSync();
+        const snapshot = await api.getAgentSnapshot(agent.id, { reason });
+        if (disposed || !termRef.current) return;
+        if (snapshot?.data) {
+          if (noticeTruncated && snapshot.truncated && !truncatedNoticeShown) {
+            truncatedNoticeShown = true;
+            onNotice?.(`Showing recent ${agent.name} terminal output; older output is in the session log.`);
+          }
+          // capture-pane snapshots are newline-joined screen text: paint them on a
+          // clean slate via snapshotToTerminalData (\x1bc + \n→\r\n). Fallback
+          // snapshots (format: "raw") are raw PTY bytes — write them verbatim so
+          // the \n→\r\n rewrite cannot corrupt their escape sequences; still
+          // prefix \x1bc so they start from a reset screen.
+          const restoreData = snapshot.format === "raw"
+            ? `\x1bc${snapshot.data}`
+            : snapshotToTerminalData(snapshot.data);
+          writeOutput(restoreData);
+          // Snapshot replay is a self-contained reset frame. If the replay tail
+          // ended in a partial ANSI sequence, drop that fragment so live output
+          // cannot be parsed as its continuation.
+          pendingTerminalOutputRef.current = "";
+        }
+        lastSeqRef.current = Math.max(lastSeqRef.current || 0, snapshot?.seq || 0);
+        snapshotReadyRef.current = true;
+        replayPendingOutput();
+      } catch (error) {
+        if (!disposed) {
+          onNotice?.(`Could not restore ${agent.name} terminal output: ${error.message}`);
+          // writeOutput -> filterTerminalOutput mutates pendingTerminalOutputRef
+          // (it stashes a trailing incomplete escape). If terminal.write threw
+          // mid-restore, that ref keeps a dangling escape fragment that would
+          // corrupt parsing of the next live chunk. Reset it so live output
+          // starts from a clean parser state.
+          pendingTerminalOutputRef.current = "";
+          snapshotReadyRef.current = true;
+          replayPendingOutput();
+        }
+      } finally {
+        snapshotReplayInFlightRef.current = false;
+      }
+    };
     const fitAndSync = () => {
-      if (disposed || !containerRef.current || !termRef.current) return;
+      if (disposed || !containerRef.current || !termRef.current) return false;
       const box = containerRef.current.getBoundingClientRect();
-      if (box.width < 20 || box.height < 20) return;
+      if (box.width < 20 || box.height < 20) return false;
       try {
         fitAddon.fit();
       } catch {
-        return;
+        return false;
       }
       const resizeKey = `${terminal.cols}x${terminal.rows}`;
+      const resized = resizeKey !== lastResizeKey;
       if (resizeKey !== lastResizeKey) {
         lastResizeKey = resizeKey;
+        // True-TUI mode: the backend resize-window fires SIGWINCH and the agent's
+        // TUI repaints itself at the new cols/rows. We do NOT fetch+replay a
+        // snapshot on resize — replaying the raw byte history at a new width
+        // overprints garbage. Just resize and let the TUI redraw.
         api.resizeAgent(agent.id, terminal.cols, terminal.rows).catch(() => {});
       }
       refreshViewport();
+      return resized;
     };
     const scheduleResize = () => {
       if (resizeFrame) {
@@ -628,46 +715,19 @@ function AgentTerminal({ agent, active, hidden, terminalTheme, onFocus, onNotice
     const observer = new ResizeObserver(scheduleResize);
     observer.observe(containerRef.current);
     window.addEventListener("resize", scheduleResize);
-    scheduleResize();
-    const restoreSnapshot = async () => {
-      try {
-        scheduleResize();
-        await new Promise((resolve) => requestAnimationFrame(resolve));
-        fitAndSync();
-        const snapshot = await api.getAgentSnapshot(agent.id);
-        if (disposed || !termRef.current) return;
-        if (snapshot?.data) {
-          if (snapshot.truncated) {
-            onNotice?.(`Showing recent ${agent.name} terminal output; older output is in the session log.`);
-          }
-          writeOutput(snapshotToTerminalData(snapshot.data));
-        }
-        lastSeqRef.current = snapshot?.seq || 0;
-        snapshotReadyRef.current = true;
-        for (const pending of pendingOutputRef.current) {
-          if (pending.seq && pending.seq <= lastSeqRef.current) continue;
-          queueOutput(pending.data, pending.seq);
-        }
-        pendingOutputRef.current = [];
-        pendingOutputCharsRef.current = 0;
-        scheduleResize();
-      } catch (error) {
-        if (!disposed) {
-          onNotice?.(`Could not restore ${agent.name} terminal output: ${error.message}`);
-          // writeOutput → filterTerminalOutput mutates pendingTerminalOutputRef
-          // (it stashes a trailing incomplete escape). If terminal.write threw
-          // mid-restore, that ref keeps a dangling escape fragment that would
-          // corrupt parsing of the next live chunk. Reset it so live output
-          // starts from a clean parser state.
-          pendingTerminalOutputRef.current = "";
-          snapshotReadyRef.current = true;
-        }
-      }
+    const scheduleWindowRestoreSync = () => {
+      if (document.visibilityState === "hidden") return;
+      scheduleResize();
+      setTimeout(scheduleResize, 80);
     };
-    restoreSnapshot();
+    window.addEventListener("focus", scheduleWindowRestoreSync);
+    document.addEventListener("visibilitychange", scheduleWindowRestoreSync);
+    scheduleResize();
+    replaySnapshot({ noticeTruncated: true, reason: "restore" });
     const resizeTimers = [50, 250, 700].map((delay) => setTimeout(scheduleResize, delay));
     return () => {
       disposed = true;
+      snapshotReadyRef.current = false;
       if (resizeFrame) {
         cancelAnimationFrame(resizeFrame);
       }
@@ -680,6 +740,8 @@ function AgentTerminal({ agent, active, hidden, terminalTheme, onFocus, onNotice
       resizeTimers.forEach((timer) => clearTimeout(timer));
       observer.disconnect();
       window.removeEventListener("resize", scheduleResize);
+      window.removeEventListener("focus", scheduleWindowRestoreSync);
+      document.removeEventListener("visibilitychange", scheduleWindowRestoreSync);
       wheelTarget?.removeEventListener("wheel", onWheelCapture, { capture: true });
       inputBatcher.dispose({ flush: true });
       terminal.dispose();
@@ -691,7 +753,7 @@ function AgentTerminal({ agent, active, hidden, terminalTheme, onFocus, onNotice
       pendingWriteTextRef.current = "";
       pendingWriteSeqRef.current = 0;
     };
-  }, [agent.backend, agent.id, agent.name, agent.pane, agent.rawLog, onNotice]);
+  }, [agent.backend, agent.id, agent.name, agent.pane, agent.rawLog, agent.transcriptLog, onNotice, queuePendingOutput]);
 
   useEffect(() => {
     if (hidden) return;
@@ -723,11 +785,8 @@ function AgentTerminal({ agent, active, hidden, terminalTheme, onFocus, onNotice
   useEffect(() => {
     const off = api.onAgentData(({ id, data, seq = 0 }) => {
       if (id === agent.id && termRef.current) {
-        if (!snapshotReadyRef.current) {
-          const text = String(data || "");
-          pendingOutputRef.current.push({ data: text, seq });
-          pendingOutputCharsRef.current += text.length;
-          pendingOutputCharsRef.current = trimPendingOutputQueue(pendingOutputRef.current, pendingOutputCharsRef.current);
+        if (!snapshotReadyRef.current || snapshotReplayInFlightRef.current) {
+          queuePendingOutput(data, seq);
           return;
         }
         if (seq && seq <= lastSeqRef.current) {
@@ -737,7 +796,7 @@ function AgentTerminal({ agent, active, hidden, terminalTheme, onFocus, onNotice
       }
     });
     return off;
-  }, [agent.id]);
+  }, [agent.id, queuePendingOutput]);
 
   // Only waiting_input breathes: it is the one status that asks the user to act.
   const breathClass = stoppedOrExited(agent)
@@ -2120,6 +2179,7 @@ function App() {
                 agent.backend || "",
                 agent.pane || "",
                 agent.rawLog || "",
+                agent.transcriptLog || "",
                 agent.startedAt || ""
               ].join(":")}
               agent={agent}

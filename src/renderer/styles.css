@@ -973,11 +973,6 @@ button {
   display: none;
 }
 
-.terminal-surface .xterm-screen {
-  width: 100%;
-  height: 100%;
-}
-
 /* Ambient effects (光效). Everything is scoped under .effects-on so the toggle
    removes the rules at the selector level — no JS cleanup, zero idle cost.
    Restraint rules: max spread 18px, max alpha 0.18, cycle >= 2.8s, effects on

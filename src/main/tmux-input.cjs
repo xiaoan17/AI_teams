@@ -329,11 +329,11 @@ function tmuxInputActions(data, inputState = null) {
 // paste goes through a tmux buffer paste, and Enter must submit via
 // `send-keys Enter` (an attached-view PTY raw `\r` is
 // not treated as a real keypress by some TUI CLIs — see the 2026-06-14 attached
-// view submit regression). But a submit fired immediately after a bracketed
-// paste races the paste state machine: the terminal can swallow the Enter (and
-// sometimes the pasted text too). Only the submit key waits, and only after
-// explicit paste content — ordinary typing and
-// bare arrow/backspace keys are not delayed.
+// view submit regression). But a submit fired immediately after text or
+// bracketed paste can race the target TUI's input state: the terminal can
+// swallow the Enter (and sometimes the pending text too). Only the submit key
+// waits, and only after input content — ordinary typing and bare
+// arrow/backspace keys are not delayed.
 //
 // `deps`:
 //   resolvePane(agentId) -> pane string | null   (memory first, no disk read)
@@ -357,21 +357,22 @@ async function writeInputActions(agentId, data, deps) {
     throw new Error(`Agent is not running: ${agentId}`);
   }
   const submitDelayMs = Math.max(0, Number(deps.submitDelayMs) || 0);
-  // Tracks whether text was pasted since the last submit. Only an Enter that
-  // follows fresh paste content needs the settle delay. When inputState is
-  // provided this intentionally spans multiple renderer IPC calls.
+  // Tracks whether editable content was delivered since the last submit. The
+  // renderer can send text and Enter in separate IPC calls, so this intentionally
+  // spans batches when inputState is provided.
   const inputState = deps.inputState && typeof deps.inputState === "object" ? deps.inputState : {};
-  let pastedSinceSubmit = inputState.pastedSinceSubmit === true;
+  let contentSinceSubmit = inputState.contentSinceSubmit === true || inputState.pastedSinceSubmit === true;
   for (const action of tmuxInputActions(data, inputState)) {
     if (action.type === "key") {
-      // Enter is the submit key. Let a preceding bracketed paste settle first so
-      // the terminal does not swallow the Enter mid-paste.
-      if (action.key === TMUX_SUBMIT_KEY && pastedSinceSubmit && submitDelayMs > 0) {
+      // Enter is the submit key. Let preceding input content settle first so the
+      // terminal does not swallow the Enter mid-update.
+      if (action.key === TMUX_SUBMIT_KEY && contentSinceSubmit && submitDelayMs > 0) {
         await deps.sleep(submitDelayMs);
       }
       await deps.sendKey(pane, action.key);
       if (action.key === TMUX_SUBMIT_KEY) {
-        pastedSinceSubmit = false;
+        contentSinceSubmit = false;
+        inputState.contentSinceSubmit = false;
         inputState.pastedSinceSubmit = false;
       }
       continue;
@@ -382,11 +383,14 @@ async function writeInputActions(agentId, data, deps) {
     }
     if (action.type === "paste") {
       await deps.pasteText(pane, text);
-      pastedSinceSubmit = true;
+      contentSinceSubmit = true;
+      inputState.contentSinceSubmit = true;
       inputState.pastedSinceSubmit = true;
       continue;
     }
     await deps.sendText(pane, text);
+    contentSinceSubmit = true;
+    inputState.contentSinceSubmit = true;
   }
 }
 

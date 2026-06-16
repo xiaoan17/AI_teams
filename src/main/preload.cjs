@@ -11,7 +11,7 @@ contextBridge.exposeInMainWorld("aiTeams", {
   detectAgents: () => ipcRenderer.invoke("agents:detect"),
   importAgents: (payload, options = {}) => ipcRenderer.invoke("agents:import", payload, options),
   removeAgent: (agentId) => ipcRenderer.invoke("agents:remove", agentId),
-  getAgentSnapshot: (agentId) => ipcRenderer.invoke("agents:snapshot", agentId),
+  getAgentSnapshot: (agentId, options = {}) => ipcRenderer.invoke("agents:snapshot", agentId, options),
   startAgent: (agentId) => ipcRenderer.invoke("agents:start", agentId),
   stopAgent: (agentId) => ipcRenderer.invoke("agents:stop", agentId),
   stopAllAgents: () => ipcRenderer.invoke("agents:stopAll"),

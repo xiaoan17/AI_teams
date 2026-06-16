@@ -1260,6 +1260,65 @@ function appendMarkdown(file, title, body) {
   fs.appendFileSync(file, text);
 }
 
+function terminalOutputToTranscriptText(data) {
+  return String(data || "")
+    .replace(/\x1b\][\s\S]*?(?:\x07|\x1b\\)/g, "")
+    .replace(/\x1bP[\s\S]*?(?:\x07|\x1b\\)/g, "")
+    .replace(/\x1b\[[0-9;?]*[AF]/g, "\n")
+    .replace(/\x1b\[[0-9;?]*[BCDEGHJKST]/g, "")
+    .replace(/\x1b\[[0-9;:;?=><]*[ -/]*[@-~]/g, "")
+    .replace(/\x1b[()][A-Za-z0-9]/g, "")
+    .replace(/\x1b[@-_][0-?]*[ -/]*[@-~]/g, "")
+    .replace(/\r\n/g, "\n")
+    .replace(/\r/g, "\n")
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/\n{3,}/g, "\n\n");
+}
+
+const transcriptWriteBuffers = new Map();
+const TRANSCRIPT_FLUSH_DELAY_MS = 120;
+
+function flushTranscript(file) {
+  const state = transcriptWriteBuffers.get(file);
+  if (!state) {
+    return;
+  }
+  if (state.timer) {
+    clearTimeout(state.timer);
+  }
+  transcriptWriteBuffers.delete(file);
+  if (!state.text.trim()) {
+    return;
+  }
+  ensureDir(path.dirname(file));
+  fs.appendFileSync(file, state.text);
+}
+
+function flushAllTranscripts() {
+  for (const file of [...transcriptWriteBuffers.keys()]) {
+    flushTranscript(file);
+  }
+}
+
+function queueTranscript(file, data) {
+  if (!file) {
+    return;
+  }
+  const text = terminalOutputToTranscriptText(data);
+  if (!text.trim()) {
+    return;
+  }
+  const state = transcriptWriteBuffers.get(file) || { text: "", timer: null };
+  state.text += text;
+  if (!state.timer) {
+    state.timer = setTimeout(() => flushTranscript(file), TRANSCRIPT_FLUSH_DELAY_MS);
+    if (typeof state.timer.unref === "function") {
+      state.timer.unref();
+    }
+  }
+  transcriptWriteBuffers.set(file, state);
+}
+
 function appendTimeline(targets, message) {
   const day = new Date().toISOString().slice(0, 10).replaceAll("-", "");
   const file = path.join(SESSIONS_DIR, `timeline-${day}.md`);
@@ -1271,6 +1330,7 @@ function createSessionFiles(agent) {
   ensureDir(dir);
   const stamp = localStamp();
   const rawLog = path.join(dir, `${stamp}.ansi.log`);
+  const transcriptLog = path.join(dir, `${stamp}.txt`);
   const markdownLog = path.join(dir, `${stamp}.md`);
   fs.writeFileSync(
     markdownLog,
@@ -1282,11 +1342,13 @@ function createSessionFiles(agent) {
       `- Command: \`${shellCommand(agent)}\``,
       `- CWD: \`${agentCwd(agent)}\``,
       `- Raw terminal log: \`${rawLog}\``,
+      `- Text transcript: \`${transcriptLog}\``,
       ""
     ].join("\n")
   );
   fs.writeFileSync(rawLog, "");
-  return { rawLog, markdownLog };
+  fs.writeFileSync(transcriptLog, "");
+  return { rawLog, transcriptLog, markdownLog };
 }
 
 function inferStatus(data) {
@@ -1349,6 +1411,7 @@ function directAgentPublicState(agent) {
     pane: null,
     startedAt: running?.startedAt || null,
     markdownLog: running?.markdownLog || null,
+    transcriptLog: running?.transcriptLog || null,
     rawLog: running?.rawLog || null
   };
 }
@@ -1421,6 +1484,7 @@ function directStartAgent(agentId) {
     agent,
     ptyProcess,
     rawLog: sessionFiles.rawLog,
+    transcriptLog: sessionFiles.transcriptLog,
     markdownLog: sessionFiles.markdownLog,
     statusDir: STATUS_DIR,
     workspaceRoot: WORKSPACE_ROOT,
@@ -1443,6 +1507,7 @@ function directStartAgent(agentId) {
     state.replayBuffer = replay.text;
     state.replayTruncated = state.replayTruncated || replay.truncated;
     fs.appendFileSync(state.rawLog, data);
+    queueTranscript(state.transcriptLog, data);
     const inferred = inferStatus(state.buffer);
     state.status = inferred.status;
     state.reason = inferred.reason;
@@ -1472,6 +1537,9 @@ function directStopAgent(agentId) {
   if (!state?.ptyProcess) {
     return;
   }
+  if (state.transcriptLog) {
+    flushTranscript(state.transcriptLog);
+  }
   const pid = state.ptyProcess.pid;
   state.ptyProcess.kill();
   state.ptyProcess = null;
@@ -1489,6 +1557,7 @@ function directStopAgent(agentId) {
 }
 
 function directStopAllAgents() {
+  flushAllTranscripts();
   for (const agentId of [...agents.keys()]) {
     directStopAgent(agentId);
   }
@@ -1741,12 +1810,15 @@ function fileSize(file) {
 function setupTmuxAgentRuntime(root, agent, pane) {
   const sessionFiles = createSessionFiles(agent);
   runTmux(["pipe-pane", "-o", "-t", pane, `cat >> ${shellQuote(sessionFiles.rawLog)}`]);
-  return {
+  const runtimeAgent = {
     pane,
     raw_log: sessionFiles.rawLog,
+    transcript_log: sessionFiles.transcriptLog,
     markdown_log: sessionFiles.markdownLog,
     started_at: nowIso()
   };
+  tmuxTranscriptLogs.set(agent.id, runtimeAgent.transcript_log);
+  return runtimeAgent;
 }
 
 function createTmuxSession(config, agentsToStart = null) {
@@ -1842,6 +1914,7 @@ function tmuxAgentPublicState(agent, context = {}) {
     pane: runtimeAgent.pane || null,
     startedAt: runtimeAgent.started_at || null,
     markdownLog: runtimeAgent.markdown_log || null,
+    transcriptLog: runtimeAgent.transcript_log || null,
     rawLog: runtimeAgent.raw_log || null
   };
 
@@ -1894,6 +1967,7 @@ const tmuxLastStatusKey = new Map();
 // is still emitted immediately and unthrottled.
 const TMUX_STATUS_THROTTLE_MS = Math.max(50, Number(process.env.AITEAMS_TMUX_STATUS_THROTTLE_MS || 200));
 const tmuxStatusThrottleTimers = new Map();
+const tmuxTranscriptLogs = new Map();
 
 function inferAndEmitTmuxStatus(agentId) {
   try {
@@ -1974,6 +2048,31 @@ function publicStateForTmuxView(agentId, patch = {}) {
   };
 }
 
+function syncTmuxTranscriptLogPaths(runtime = readRuntime()) {
+  const liveIds = new Set();
+  for (const [agentId, runtimeAgent] of Object.entries(runtime.agents || {})) {
+    liveIds.add(agentId);
+    if (runtimeAgent?.transcript_log) {
+      tmuxTranscriptLogs.set(agentId, runtimeAgent.transcript_log);
+    } else {
+      tmuxTranscriptLogs.delete(agentId);
+    }
+  }
+  for (const agentId of [...tmuxTranscriptLogs.keys()]) {
+    if (!liveIds.has(agentId)) {
+      tmuxTranscriptLogs.delete(agentId);
+    }
+  }
+}
+
+function appendTmuxTranscript(agentId, data) {
+  const transcriptLog = tmuxTranscriptLogs.get(agentId);
+  if (!transcriptLog) {
+    return;
+  }
+  queueTranscript(transcriptLog, data);
+}
+
 const tmuxViews = createTmuxViewManager({
   getNodePty,
   statusBufferChars: STATUS_BUFFER_CHARS,
@@ -1985,6 +2084,7 @@ const tmuxViews = createTmuxViewManager({
     // expensive part (tmux spawns + disk reads + regex); defer it to a trailing
     // throttle so a streaming TUI cannot freeze the main thread per chunk.
     emit("agent:data", { id: agentId, data, seq, source: "tmux-view", backend: "tmux" });
+    appendTmuxTranscript(agentId, data);
     scheduleTmuxStatusInference(agentId);
   },
   onViewState: (agentId, event) => {
@@ -2013,6 +2113,7 @@ function reconcileRuntimePanesFromTable(config, runtime, panesByAgentId) {
   if (changed) {
     saveRuntime(nextRuntime);
   }
+  syncTmuxTranscriptLogPaths(nextRuntime);
   return nextRuntime;
 }
 
@@ -2097,6 +2198,7 @@ async function reconcileTmuxBackend() {
     }
 
     const runtime = normalizeRuntime(readRuntime(), session);
+    syncTmuxTranscriptLogPaths(runtime);
     const panesResult = await runTmuxAsync(
       ["list-panes", "-s", "-t", session, "-F", "#{pane_id}\t#{pane_dead}\t#{window_id}\t#{window_name}"],
       { check: false }
@@ -2223,6 +2325,7 @@ function tmuxListAgentStates() {
   const config = loadConfig();
   ensureTmuxReconcile();
   let runtime = readRuntime();
+  syncTmuxTranscriptLogPaths(normalizeRuntime(runtime, runtimeSession(config)));
   if (tmuxHasSession(runtimeSession(config))) {
     const panesResult = runTmux(
       ["list-panes", "-s", "-t", runtimeSession(config), "-F", "#{pane_id}\t#{pane_dead}\t#{window_name}"],
@@ -2279,6 +2382,7 @@ async function tmuxStartAgent(agentId) {
     runtime = createTmuxSession(config, [agent]);
   } else {
     runtime = normalizeRuntime(readRuntime(), session);
+    syncTmuxTranscriptLogPaths(runtime);
     runtime = ensureTmuxAgentPane(config, agent, runtime);
   }
 
@@ -2316,6 +2420,9 @@ async function tmuxStopAgent(agentId) {
   }
   const runtime = readRuntime();
   const pane = runtime.agents?.[agentId]?.pane;
+  if (runtime.agents?.[agentId]?.transcript_log) {
+    flushTranscript(runtime.agents[agentId].transcript_log);
+  }
   await destroyTmuxViewSessionForAgent(config, agentId);
   if (pane) {
     // Reap the agent's process tree first, then drop the pane shell.
@@ -2334,6 +2441,7 @@ async function tmuxStopAgent(agentId) {
     stopped_at: nowIso()
   };
   saveRuntime(runtime);
+  syncTmuxTranscriptLogPaths(runtime);
   const status = {
     ...tmuxAgentPublicState(agent, { config, runtime }),
     status: paneLingers ? "error" : "stopped",
@@ -2350,6 +2458,7 @@ async function tmuxStopAgent(agentId) {
 async function tmuxStopAllAgents() {
   const config = loadConfig();
   const session = runtimeSession(config);
+  flushAllTranscripts();
   await tmuxViews.destroyAll();
   await destroyTmuxViewSessionsForBase(session);
   if (tmuxHasSession(session)) {
@@ -2379,6 +2488,7 @@ async function tmuxStopAllAgents() {
     emit("agent:status", status);
   }
   saveRuntime(runtime);
+  syncTmuxTranscriptLogPaths(runtime);
 }
 
 async function tmuxPasteTextFallback(pane, text) {
@@ -2483,18 +2593,17 @@ function tmuxScrollAgent(agentId, lines) {
   return tmuxViews.scroll(agentId, lines);
 }
 
-function tmuxAgentTerminalSnapshot(agentId) {
+function tmuxAgentTerminalSnapshot(agentId, options = {}) {
   const runtime = readRuntime();
   const runtimeAgent = runtime.agents?.[agentId];
   const viewSnapshot = tmuxViews.snapshot(agentId);
-  if (tmuxViews.isAttached(agentId) && viewSnapshot) {
-    return {
-      id: agentId,
-      ...viewSnapshot,
-      source: "tmux-view",
-      backend: "tmux"
-    };
-  }
+  // True-TUI restore: the right primitive is the CURRENT screen, captured with
+  // `capture-pane -p -e` (text + SGR). Agent TUIs run on the alt-screen and
+  // redraw in place; replaying the raw PTY byte history at restore would
+  // overprint garbage. Capture paints the live screen onto a clean slate (the
+  // renderer prepends \x1bc) and the live stream takes over from there. The
+  // `format: "capture"` tag tells the renderer this is newline-joined screen
+  // text, safe for the \n→\r\n normalization in snapshotToTerminalData.
   if (runtimeAgent?.pane && tmuxPaneDead(runtimeAgent.pane) === false) {
     try {
       const data = tmuxCapturePane(runtimeAgent.pane, TERMINAL_SNAPSHOT_LINES);
@@ -2502,42 +2611,46 @@ function tmuxAgentTerminalSnapshot(agentId) {
         id: agentId,
         seq: viewSnapshot?.seq || 0,
         data,
+        format: "capture",
         source: "tmux-capture",
         truncated: data.split("\n").length >= TERMINAL_SNAPSHOT_LINES,
         backend: "tmux"
       };
     } catch (_error) {
-      // Fall back to the view/log replay paths below when tmux capture is unavailable.
+      // Fall through to the raw byte fallbacks when capture is unavailable.
     }
   }
-  if (viewSnapshot) {
+  // Fallbacks (pane gone / capture failed): replay the raw PTY byte stream. These
+  // are raw bytes, NOT capture text — tagged format: "raw" so the renderer writes
+  // them verbatim without the capture-only \n→\r\n rewrite.
+  if (viewSnapshot?.data) {
     return {
       id: agentId,
       ...viewSnapshot,
+      format: "raw",
       source: "tmux-view",
       backend: "tmux"
     };
   }
-  if (!runtimeAgent?.pane || tmuxPaneDead(runtimeAgent.pane) === null) {
-    const data = tailFile(runtimeAgent?.raw_log, TERMINAL_REPLAY_BUFFER_CHARS);
+  if (runtimeAgent?.raw_log) {
+    const data = tailFile(runtimeAgent.raw_log, TERMINAL_REPLAY_BUFFER_CHARS);
     return {
       id: agentId,
-      seq: 0,
+      seq: viewSnapshot?.seq || 0,
       data,
-      source: runtimeAgent?.raw_log ? "raw-log" : "empty",
-      truncated: Boolean(runtimeAgent?.raw_log && fileSize(runtimeAgent.raw_log) > Buffer.byteLength(data)),
+      format: "raw",
+      source: "raw-log",
+      truncated: Boolean(fileSize(runtimeAgent.raw_log) > Buffer.byteLength(data)),
       backend: "tmux"
     };
   }
-
-  const data = tailFile(runtimeAgent.raw_log, TERMINAL_REPLAY_BUFFER_CHARS);
-  const truncated = Boolean(runtimeAgent.raw_log && fileSize(runtimeAgent.raw_log) > Buffer.byteLength(data));
   return {
     id: agentId,
     seq: 0,
-    data,
-    source: runtimeAgent.raw_log ? "raw-log" : "empty",
-    truncated,
+    data: "",
+    format: "raw",
+    source: "empty",
+    truncated: false,
     backend: "tmux"
   };
 }
@@ -2577,6 +2690,7 @@ function tmuxPublicState(agentId) {
     pane: runtimeAgent.pane || null,
     startedAt: runtimeAgent.started_at || null,
     markdownLog: runtimeAgent.markdown_log || null,
+    transcriptLog: runtimeAgent.transcript_log || null,
     rawLog: runtimeAgent.raw_log || null
   };
 }
@@ -2728,8 +2842,8 @@ function listAgentStates() {
   return getTerminalBackend().listAgents();
 }
 
-function agentTerminalSnapshot(agentId) {
-  return getTerminalBackend().snapshot(agentId);
+function agentTerminalSnapshot(agentId, options = {}) {
+  return getTerminalBackend().snapshot(agentId, options);
 }
 
 function startAgent(agentId) {
@@ -2746,6 +2860,8 @@ function stopAgent(agentId) {
 function stopAllAgents() {
   agentInputQueues.clear();
   agentInputStates.clear();
+  flushAllTranscripts();
+  tmuxTranscriptLogs.clear();
   for (const timer of tmuxStatusThrottleTimers.values()) {
     clearTimeout(timer);
   }
@@ -2794,6 +2910,7 @@ function scrollAgent(agentId, lines) {
 async function releaseCurrentWorkspaceBackend({ terminateAgents = true } = {}) {
   agentInputQueues.clear();
   agentInputStates.clear();
+  flushAllTranscripts();
   if (selectedBackendName() === "direct-pty") {
     if (terminateAgents) {
       directStopAllAgents();
@@ -2825,6 +2942,7 @@ async function releaseCurrentWorkspaceBackend({ terminateAgents = true } = {}) {
         runTmux(["kill-session", "-t", session], { check: false });
       }
     }
+    tmuxTranscriptLogs.clear();
   }
 }
 
@@ -3193,7 +3311,7 @@ ipcHandle("agents:presets", () => builtinAgentPresets());
 ipcHandle("agents:detect", () => detectAllAgentTypes());
 ipcHandle("agents:import", (_event, payload, options = {}) => importAgents(payload, options));
 ipcHandle("agents:remove", (_event, agentId) => removeAgent(agentId));
-ipcHandle("agents:snapshot", (_event, agentId) => agentTerminalSnapshot(agentId));
+ipcHandle("agents:snapshot", (_event, agentId, options = {}) => agentTerminalSnapshot(agentId, options));
 ipcHandle("agents:start", (_event, agentId) => startAgent(agentId));
 ipcHandle("agents:stop", (_event, agentId) => stopAgent(agentId));
 ipcHandle("agents:stopAll", () => stopAllAgents());
