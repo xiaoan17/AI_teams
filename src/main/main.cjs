@@ -392,6 +392,28 @@ function normalizeCodexAgent(agent) {
   };
 }
 
+// Default the Claude Code agent to --dangerously-skip-permissions. The flag is
+// in the code defaults (defaultAppAgentConfig / builtinAgentPresets), but those
+// only seed a NEW config file — a user-level agents.json written by an older
+// build keeps Claude's old `args: []`, and the app reads that on every launch,
+// so the new default never reaches existing installs. Inject it here in the
+// normalize path (which loadAppAgentConfig() writes back to disk when it
+// changes content), so an old config auto-upgrades on first launch of the new
+// app. mergeArgs dedupes, so a config that already has the flag is left
+// untouched (no spurious rewrite), and any other user-set Claude flags are
+// preserved. Mirrors normalizeCodexAgent above.
+function normalizeClaudeAgent(agent) {
+  const commandName = path.basename(String(agent?.command || "").trim());
+  if (commandName !== "claude") {
+    return agent;
+  }
+  const args = Array.isArray(agent.args) ? agent.args : [];
+  return {
+    ...agent,
+    args: mergeArgs(args, ["--dangerously-skip-permissions"])
+  };
+}
+
 function resolveExecutableCommand(command) {
   const value = String(command || "").trim();
   if (!value) {
@@ -537,7 +559,7 @@ function normalizeAgentConfig(config, sourceRoot = null) {
     ) {
       next.cwd = ".";
     }
-    return normalizeCodexAgent(next);
+    return normalizeClaudeAgent(normalizeCodexAgent(next));
   }).filter(Boolean);
   const routing = {
     ...defaults.routing,
