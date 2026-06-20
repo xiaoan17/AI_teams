@@ -62,6 +62,23 @@ def app_path(root: Path, *parts: str) -> Path:
     return root / APP_DIR / Path(*parts)
 
 
+def roles_dir() -> Path:
+    override = os.environ.get("AITEAM_ROLES_DIR", "").strip()
+    if override:
+        return Path(override).expanduser()
+    return Path.home() / ".aiteam" / "roles"
+
+
+def workspace_roles_dir(root: Path) -> Path:
+    return root / APP_DIR / "roles"
+
+
+def resolve_roles_library(dest: str | None, root: Path) -> Path:
+    if str(dest or "global").strip() == "workspace":
+        return workspace_roles_dir(root)
+    return roles_dir()
+
+
 def ensure_dirs(root: Path) -> None:
     for rel in [
         "tasks",
@@ -166,14 +183,139 @@ def tmux_has_session(session: str) -> bool:
     return run_tmux(["has-session", "-t", session], check=False).returncode == 0
 
 
-def shell_command(agent: dict[str, Any]) -> str:
+_RUNTIME_DEFAULTS = {
+    "claude": {"command": "claude", "args": ["--dangerously-skip-permissions"], "instructions_file": "CLAUDE.md", "skills_dir": ".claude/skills"},
+    "codex": {"command": "codex", "args": [], "instructions_file": "AGENTS.md", "skills_dir": ".codex/skills"},
+}
+
+
+def resolve_runtime(source: dict[str, Any], runtime_name: str | None = None) -> dict[str, Any]:
+    """Normalize old flat schema and new runtimes schema into one runtime view."""
+    runtimes = source.get("runtimes") if isinstance(source.get("runtimes"), dict) else None
+    runtime = str(
+        runtime_name
+        or source.get("default_runtime")
+        or (next(iter(runtimes), "") if runtimes else "")
+        or source.get("type")
+        or Path(str(source.get("command") or "claude")).name
+    ).strip().lower() or "claude"
+    fallback = _RUNTIME_DEFAULTS.get(runtime, _RUNTIME_DEFAULTS["claude"])
+    if runtimes and isinstance(runtimes.get(runtime), dict):
+        rt = runtimes[runtime]
+        args = rt.get("args")
+        return {
+            "runtime": runtime,
+            "command": str(rt.get("command") or fallback["command"]),
+            "args": [str(a) for a in args] if isinstance(args, list) else [],
+            "instructions_file": str(rt.get("instructions_file") or source.get("persona_file") or fallback["instructions_file"]),
+            "skills_dir": str(rt.get("skills_dir") or fallback["skills_dir"]),
+        }
+    is_codex = runtime == "codex"
+    args = source.get("args")
+    norm_args = [str(a) for a in args] if isinstance(args, list) else []
+    return {
+        "runtime": runtime,
+        "command": str(source.get("command") or fallback["command"]),
+        "args": norm_args if norm_args else ([] if source.get("command") else list(fallback["args"])),
+        "instructions_file": str(
+            (source.get("codex_instructions_file") if is_codex else source.get("persona_file"))
+            or ("RTK.md" if is_codex else source.get("persona_file"))
+            or fallback["instructions_file"]
+        ),
+        "skills_dir": fallback["skills_dir"],
+    }
+
+
+def agent_command_family(agent: dict[str, Any], command: Any) -> str:
+    runtime = str(agent.get("type") or "").strip().lower()
+    if runtime:
+        return runtime
+    if isinstance(command, list) and command:
+        command_name = command[0]
+    else:
+        command_name = command
+    return Path(str(command_name or "")).name.lower()
+
+
+def append_model_args(parts: list[str], agent: dict[str, Any], command: Any) -> None:
+    model = agent.get("model")
+    if not isinstance(model, str) or not model.strip():
+        return
+    model = model.strip()
+    runtime = agent_command_family(agent, command)
+    if runtime == "claude":
+        parts.extend(["--model", model])
+    elif runtime == "codex":
+        parts.extend(["-c", f"model={model}"])
+    else:
+        print(f"warning: runtime {runtime or command} does not support model injection, skipping model: {model}", file=sys.stderr)
+
+
+def shell_command(agent: dict[str, Any], *, root: Path | None = None) -> str:
     command = agent.get("command")
     args = agent.get("args", [])
+    rt = resolve_runtime(agent)
     if isinstance(command, list):
-        return shlex.join([str(part) for part in command])
-    if args:
-        return shlex.join([str(command), *[str(arg) for arg in args]])
-    return str(command)
+        parts = [str(part) for part in command]
+    elif command:
+        parts = [str(command), *[str(arg) for arg in args]]
+    else:
+        # New schema: no flat command — use the resolved default runtime.
+        command = rt["command"]
+        parts = [str(command), *[str(arg) for arg in rt["args"]]]
+
+    append_model_args(parts, agent, command)
+
+    persona_dir = str(agent.get("persona_dir") or "").strip()
+    if not persona_dir:
+        return shlex.join(parts)
+
+    base_root = (root or Path.cwd()).resolve()
+    crew_path = Path(persona_dir).expanduser()
+    if not crew_path.is_absolute():
+        crew_path = base_root / crew_path
+    crew_path = crew_path.resolve()
+
+    if crew_path.is_dir():
+        parts.extend(["--add-dir", str(crew_path)])
+    else:
+        print(f"warning: persona_dir not found, skipping --add-dir: {crew_path}", file=sys.stderr)
+
+    runtime = agent_command_family(agent, command)
+    if runtime == "codex":
+        codex_rt = resolve_runtime(agent, "codex")
+        instructions_file = str(agent.get("codex_instructions_file") or codex_rt["instructions_file"] or "AGENTS.md")
+        instructions_path = crew_path / instructions_file
+        if not instructions_path.is_file():
+            fallback_path = crew_path / str(agent.get("persona_file") or rt["instructions_file"] or "CLAUDE.md")
+            if fallback_path.is_file():
+                print(
+                    f"warning: codex instructions file not found, using persona_file fallback: {instructions_path}",
+                    file=sys.stderr,
+                )
+                instructions_path = fallback_path
+            else:
+                print(f"warning: codex instructions file not found, skipping developer_instructions: {instructions_path}", file=sys.stderr)
+                return shlex.join(parts)
+        if instructions_path.is_file():
+            instructions = instructions_path.read_text(encoding="utf-8")
+            parts.extend(["-c", f"developer_instructions={json.dumps(instructions, ensure_ascii=False)}"])
+        else:
+            print(f"warning: codex instructions file not found, skipping developer_instructions: {instructions_path}", file=sys.stderr)
+        return shlex.join(parts)
+
+    persona_file = str(agent.get("persona_file") or rt["instructions_file"] or "CLAUDE.md")
+    persona_path = crew_path / persona_file
+    if persona_path.is_file():
+        persona = persona_path.read_text(encoding="utf-8")
+        if runtime == "claude":
+            parts.extend(["--append-system-prompt", persona])
+        else:
+            print(f"warning: runtime {runtime or command} does not support persona prompt injection, using --add-dir only", file=sys.stderr)
+    else:
+        print(f"warning: persona_file not found, skipping --append-system-prompt: {persona_path}", file=sys.stderr)
+
+    return shlex.join(parts)
 
 
 def append_session_markdown(path: Path, heading: str, body: str) -> None:
@@ -369,9 +511,9 @@ def cmd_start(args: argparse.Namespace) -> int:
     ensure_dirs(root)
     cfg = load_config(root)
     session = resolved_session(root, cfg)
-    agents = enabled_agents(cfg)
+    agents = selected_start_agents(root, cfg, args)
     if not agents:
-        raise AITeamError("No enabled agents. Edit .aiteam/agents.json or run `init --demo` in a scratch workspace.")
+        raise AITeamError("No agents selected. Edit .aiteam/agents.json, run `init --demo`, or use `start --role <id>`.")
     if tmux_has_session(session):
         print(f"tmux session already running: {session}")
         return 0
@@ -383,7 +525,7 @@ def cmd_start(args: argparse.Namespace) -> int:
     }
     first = agents[0]
     first_cwd = str(resolve_agent_cwd(root, first.get("cwd")))
-    run_tmux(["new-session", "-d", "-s", session, "-n", "agents", "-c", first_cwd, shell_command(first)])
+    run_tmux(["new-session", "-d", "-s", session, "-n", first["id"], "-c", first_cwd, shell_command(first, root=root)])
     run_tmux(["set-option", "-t", session, "window-size", "manual"], check=False)
     first_pane = run_tmux(["display-message", "-p", "-t", f"{session}:0.0", "#{pane_id}"]).stdout.strip()
     runtime["agents"][first["id"]] = setup_agent_runtime(root, first, first_pane)
@@ -403,7 +545,7 @@ def cmd_start(args: argparse.Namespace) -> int:
                 agent["id"],
                 "-c",
                 cwd,
-                shell_command(agent),
+                shell_command(agent, root=root),
             ]
         ).stdout.strip()
         runtime["agents"][agent["id"]] = setup_agent_runtime(root, agent, pane)
@@ -428,7 +570,7 @@ def setup_agent_runtime(root: Path, agent: dict[str, Any], pane: str) -> dict[st
                 "",
                 f"- Agent: `{agent['id']}`",
                 f"- Started: {utc_now()}",
-                f"- Command: `{shell_command(agent)}`",
+                f"- Command: `{shell_command(agent, root=root)}`",
                 f"- CWD: `{agent.get('cwd')}`",
                 f"- Raw terminal log: `{raw_log}`",
                 f"- Text transcript: `{transcript_log}`",
@@ -755,6 +897,326 @@ def cmd_agent_remove(args: argparse.Namespace) -> int:
     return 0
 
 
+def validate_role_dir(source: Path, expected_id: str | None = None) -> dict[str, Any]:
+    if not source.is_dir():
+        raise AITeamError(f"Role template directory not found: {source}")
+    role_path = source / "role.json"
+    if not role_path.is_file():
+        raise AITeamError(f"Role template is missing role.json: {role_path}")
+    role = load_json(role_path)
+    if not isinstance(role, dict):
+        raise AITeamError(f"Role template role.json must be an object: {role_path}")
+
+    template_id = str(role.get("id") or source.name)
+    if expected_id is not None and template_id != expected_id:
+        raise AITeamError(f"Role template id mismatch: expected {expected_id}, got {template_id}")
+
+    rt = resolve_runtime(role)
+    persona_file = str(rt["instructions_file"] or "CLAUDE.md")
+    persona_path = source / persona_file
+    if not persona_path.is_file():
+        raise AITeamError(f"Role template is missing {persona_file}: {persona_path}")
+
+    skills_dirs = list(dict.fromkeys([rt["skills_dir"], ".claude/skills"]))
+    skill_files: list[Path] = []
+    for rel in skills_dirs:
+        skills_root = source / rel
+        if skills_root.is_dir():
+            skill_files = list(skills_root.glob("*/SKILL.md"))
+            if skill_files:
+                break
+    if not skill_files:
+        raise AITeamError(f"Role template must include at least one {skills_dirs[0]}/<skill>/SKILL.md: {source}")
+
+    runtimes = role.get("runtimes")
+    if runtimes is not None:
+        if not isinstance(runtimes, dict):
+            raise AITeamError("Role template runtimes must be an object when present")
+        for name, rt_def in runtimes.items():
+            if not isinstance(rt_def, dict) or not isinstance(rt_def.get("command"), str) or not rt_def["command"].strip():
+                raise AITeamError(f"Role template runtimes.{name}.command must be a non-empty string")
+
+    model = role.get("model")
+    if model is not None and (not isinstance(model, str) or not model.strip()):
+        raise AITeamError("Role template model must be a non-empty string when present")
+
+    collab = role.get("collab")
+    if collab is not None:
+        if not isinstance(collab, dict):
+            raise AITeamError("Role template collab must be an object when present")
+        for key in ["upstream", "downstream"]:
+            if key in collab and (
+                not isinstance(collab[key], list) or not all(isinstance(item, str) for item in collab[key])
+            ):
+                raise AITeamError(f"Role template collab.{key} must be an array of strings when present")
+        if "handoff_via" in collab and not isinstance(collab["handoff_via"], str):
+            raise AITeamError("Role template collab.handoff_via must be a string when present")
+
+    return role
+
+
+def load_role_template(role_id: str) -> tuple[Path, dict[str, Any]]:
+    source = roles_dir() / role_id
+    if not source.is_dir():
+        raise AITeamError(f"Unknown role template: {role_id} ({source})")
+    role = validate_role_dir(source, role_id)
+    return source, role
+
+
+def role_list_suffix(source: Path, role: dict[str, Any]) -> str:
+    parts: list[str] = []
+    model = role.get("model")
+    if isinstance(model, str) and model.strip():
+        parts.append(f"[model:{model.strip()}]")
+    collab = role.get("collab")
+    if isinstance(collab, dict):
+        upstream = collab.get("upstream")
+        downstream = collab.get("downstream")
+        handoff = collab.get("handoff_via")
+        collab_parts: list[str] = []
+        if isinstance(upstream, list) and upstream:
+            collab_parts.append(f"↑{','.join(str(item) for item in upstream)}")
+        if isinstance(downstream, list) and downstream:
+            collab_parts.append(f"↓{','.join(str(item) for item in downstream)}")
+        if isinstance(handoff, str) and handoff.strip():
+            collab_parts.append(f"via:{handoff.strip()}")
+        if collab_parts:
+            parts.append(f"[{' '.join(collab_parts)}]")
+    version = role.get("version")
+    if isinstance(version, str) and version.strip():
+        parts.append(f"[v:{version.strip()}]")
+    if (source / ".imported").is_file():
+        parts.append("(imported)")
+    return f"\t{' '.join(parts)}" if parts else ""
+
+
+def cmd_role_list(args: argparse.Namespace) -> int:
+    library = roles_dir()
+    if not library.is_dir():
+        raise AITeamError(f"Role library not found: {library}")
+    for source in sorted(path for path in library.iterdir() if path.is_dir()):
+        role_path = source / "role.json"
+        if not role_path.is_file():
+            continue
+        role = load_json(role_path)
+        role_id = str(role.get("id") or source.name)
+        role_meta = role.get("role") if isinstance(role.get("role"), dict) else {}
+        emoji = str(role_meta.get("emoji") or "")
+        title = str(role_meta.get("title") or role.get("name") or role_id)
+        print(f"{role_id}\t{emoji}\t{title}{role_list_suffix(source, role)}")
+    return 0
+
+
+def upsert_hired_agent(cfg: dict[str, Any], role_id: str, role: dict[str, Any], *, enable: bool) -> None:
+    role_meta = role.get("role") if isinstance(role.get("role"), dict) else {}
+    rt = resolve_runtime(role)
+    codex_rt = resolve_runtime(role, "codex")
+    agent_update = {
+        "id": role_id,
+        "name": role_meta.get("title") or role_id,
+        "command": rt["command"],
+        "args": rt["args"],
+        "role": role_meta,
+        "skills": role.get("skills", []),
+        "persona_dir": f"{APP_DIR}/crew/{role_id}",
+        "persona_file": rt["instructions_file"],
+        "codex_instructions_file": codex_rt["instructions_file"],
+        "permission_mode": role.get("permission_mode") or "configure-before-start",
+        "enabled": bool(enable),
+    }
+    if role.get("model") is not None:
+        agent_update["model"] = role.get("model")
+    if isinstance(role.get("collab"), dict):
+        agent_update["collab"] = role.get("collab")
+    if isinstance(role.get("runtimes"), dict):
+        agent_update["runtimes"] = role.get("runtimes")
+    if role.get("default_runtime"):
+        agent_update["default_runtime"] = role.get("default_runtime")
+    if role.get("autonomy"):
+        agent_update["autonomy"] = role.get("autonomy")
+    agents = cfg.setdefault("agents", [])
+    for agent in agents:
+        if agent.get("id") == role_id:
+            if "model" not in agent_update:
+                agent.pop("model", None)
+            if "collab" not in agent_update:
+                agent.pop("collab", None)
+            agent.update(agent_update)
+            return
+    agents.append(agent_update)
+
+
+def ensure_crew_codex_instructions(target: Path, role: dict[str, Any]) -> None:
+    codex_rt = resolve_runtime(role, "codex")
+    instructions_file = str(codex_rt["instructions_file"] or "AGENTS.md")
+    instructions_path = target / instructions_file
+    if instructions_path.exists():
+        return
+    persona_file = str(resolve_runtime(role)["instructions_file"] or "CLAUDE.md")
+    persona_path = target / persona_file
+    if persona_path.is_file():
+        shutil.copyfile(persona_path, instructions_path)
+
+
+def hire_role_into_workspace(root: Path, role_id: str, *, enable: bool = False, force: bool = False) -> dict[str, Any]:
+    cfg = load_config(root)
+    source, role = load_role_template(role_id)
+    target = app_path(root, "crew", role_id)
+    if target.exists():
+        if not force:
+            agent = agent_by_id(cfg, role_id)
+            if agent:
+                ensure_crew_codex_instructions(target, role)
+                return agent
+            upsert_hired_agent(cfg, role_id, role, enable=enable)
+            save_config(root, cfg)
+            agent = agent_by_id(cfg, role_id)
+            if agent:
+                ensure_crew_codex_instructions(target, role)
+                return agent
+            raise AITeamError(f"Role already hired but agent upsert failed: {role_id}")
+        if not target.is_dir():
+            raise AITeamError(f"Cannot replace non-directory crew target: {target}")
+        shutil.rmtree(target)
+
+    shutil.copytree(source, target)
+    ensure_crew_codex_instructions(target, role)
+    write_json(
+        target / ".source",
+        {
+            "source_path": str(source.resolve()),
+            "role_version": role.get("version"),
+            "hired_at": utc_now(),
+        },
+    )
+    upsert_hired_agent(cfg, role_id, role, enable=enable)
+    save_config(root, cfg)
+    agent = agent_by_id(cfg, role_id)
+    if not agent:
+        raise AITeamError(f"Role hired but agent is missing from config: {role_id}")
+    return agent
+
+
+def cmd_role_hire(args: argparse.Namespace) -> int:
+    root = args.root.resolve()
+    ensure_dirs(root)
+    target = app_path(root, "crew", args.id)
+    if target.exists() and not args.force:
+        raise AITeamError(f"Role already hired: {args.id} ({target}). Use --force to replace the crew copy.")
+    hire_role_into_workspace(root, args.id, enable=args.enable, force=args.force)
+    print(f"Hired role: {args.id}")
+    print(f"Crew: {target}")
+    return 0
+
+
+def role_import_id(source: Path, override_id: str | None) -> str:
+    role_path = source / "role.json"
+    role: dict[str, Any] = {}
+    if role_path.is_file():
+        loaded = load_json(role_path)
+        if isinstance(loaded, dict):
+            role = loaded
+    role_id = str(override_id or role.get("id") or source.name).strip()
+    if not role_id:
+        raise AITeamError("Role import id must be non-empty")
+    return role_id
+
+
+def cmd_role_import(args: argparse.Namespace) -> int:
+    source = args.path.expanduser().resolve()
+    role_id = role_import_id(source, args.id)
+    role = validate_role_dir(source, None if args.id else role_id)
+
+    library = resolve_roles_library(getattr(args, "dest", "global"), args.root.resolve())
+    library.mkdir(parents=True, exist_ok=True)
+    target = library / role_id
+    tmp = library / f".import-tmp-{role_id}-{local_stamp()}"
+    if target.exists() and not args.force:
+        raise AITeamError(f"Role already exists in library: {role_id} ({target}). Use --force to replace it.")
+
+    try:
+        shutil.copytree(source, tmp)
+        copied_role = dict(role)
+        copied_role["id"] = role_id
+        write_json(tmp / "role.json", copied_role)
+        validate_role_dir(tmp, role_id)
+        write_json(
+            tmp / ".imported",
+            {
+                "source_path": str(source),
+                "role_version": copied_role.get("version"),
+                "imported_at": utc_now(),
+            },
+        )
+        if target.exists():
+            if not target.is_dir():
+                raise AITeamError(f"Cannot replace non-directory role target: {target}")
+            shutil.rmtree(target)
+        tmp.rename(target)
+    finally:
+        if tmp.exists():
+            shutil.rmtree(tmp)
+
+    print(f"Imported role: {role_id}")
+    print(f"Library: {library}")
+    return 0
+
+
+def role_ids_from_pick() -> list[str]:
+    library = roles_dir()
+    if not library.is_dir():
+        raise AITeamError(f"Role library not found: {library}")
+    roles: list[tuple[str, str]] = []
+    for source in sorted(path for path in library.iterdir() if path.is_dir()):
+        role_path = source / "role.json"
+        if not role_path.is_file():
+            continue
+        role = load_json(role_path)
+        role_meta = role.get("role") if isinstance(role.get("role"), dict) else {}
+        title = " ".join(
+            str(part) for part in [role_meta.get("emoji"), role_meta.get("title") or role.get("name") or source.name] if part
+        )
+        roles.append((source.name, title))
+    if not roles:
+        raise AITeamError(f"No role templates found in {library}")
+    print("Select roles for this start (comma-separated numbers):")
+    for index, (role_id, title) in enumerate(roles, start=1):
+        print(f"{index}. {role_id}\t{title}")
+    raw = input("> ").strip()
+    selected: list[str] = []
+    for item in raw.split(","):
+        item = item.strip()
+        if not item:
+            continue
+        if not item.isdigit() or not (1 <= int(item) <= len(roles)):
+            raise AITeamError(f"Invalid selection: {item}")
+        selected.append(roles[int(item) - 1][0])
+    return selected
+
+
+def selected_start_agents(root: Path, cfg: dict[str, Any], args: argparse.Namespace) -> list[dict[str, Any]]:
+    role_ids = list(args.role or [])
+    if args.pick:
+        role_ids = role_ids_from_pick()
+    if not role_ids:
+        return enabled_agents(cfg)
+
+    selected: list[dict[str, Any]] = []
+    seen: dict[str, int] = {}
+    for role_id in role_ids:
+        base_agent = hire_role_into_workspace(root, role_id, enable=False, force=False)
+        count = seen.get(role_id, 0) + 1
+        seen[role_id] = count
+        if count == 1:
+            selected.append(base_agent)
+            continue
+        clone = dict(base_agent)
+        clone["id"] = f"{role_id}-{count}"
+        clone["name"] = f"{base_agent.get('name', role_id)} {count}"
+        selected.append(clone)
+    return selected
+
+
 def command_binary(agent: dict[str, Any]) -> str | None:
     try:
         parts = shlex.split(shell_command(agent))
@@ -849,7 +1311,9 @@ def build_parser() -> argparse.ArgumentParser:
     task.add_argument("--force", action="store_true")
     task.set_defaults(func=cmd_new_task)
 
-    start = sub.add_parser("start", help="Start enabled agents in a tmux session")
+    start = sub.add_parser("start", help="Start enabled agents or selected roles in a tmux session")
+    start.add_argument("--role", action="append", help="Role id to start for this run. Repeatable.")
+    start.add_argument("--pick", action="store_true", help="Interactively pick roles for this run.")
     start.set_defaults(func=cmd_start)
 
     send = sub.add_parser("send", help="Route a message by @agent mentions")
@@ -907,6 +1371,30 @@ def build_parser() -> argparse.ArgumentParser:
     remove = agent_sub.add_parser("remove", help="Remove an agent")
     remove.add_argument("id")
     remove.set_defaults(func=cmd_agent_remove)
+
+    role = sub.add_parser("role", help="Manage role templates and hired crew")
+    role_sub = role.add_subparsers(dest="role_command", required=True)
+
+    role_list = role_sub.add_parser("list", help="List global role templates")
+    role_list.set_defaults(func=cmd_role_list)
+
+    role_import = role_sub.add_parser("import", help="Import an external role template into a role library")
+    role_import.add_argument("path", type=Path, help="External role template directory")
+    role_import.add_argument("--id", help="Library role id. Defaults to role.json id or the source directory name.")
+    role_import.add_argument("--force", action="store_true", help="Replace an existing library role")
+    role_import.add_argument(
+        "--dest",
+        choices=["global", "workspace"],
+        default="global",
+        help="Target library: global (~/.aiteam/roles) or workspace (<root>/.aiteam/roles). Defaults to global.",
+    )
+    role_import.set_defaults(func=cmd_role_import)
+
+    hire = role_sub.add_parser("hire", help="Hire a global role into this workspace")
+    hire.add_argument("id")
+    hire.add_argument("--enable", action="store_true", help="Enable the hired agent")
+    hire.add_argument("--force", action="store_true", help="Replace an existing crew copy")
+    hire.set_defaults(func=cmd_role_hire)
 
     return parser
 

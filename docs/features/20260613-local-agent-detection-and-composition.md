@@ -41,7 +41,7 @@ plus package-manager directories, run `--version` to confirm runnability, distin
   `commandAvailable` (:543), `discoveredBuiltinAgents` (:547),
   `mergeDiscoveredLocalAgents` (:556).
 - `builtinAgentPresets` (:534) already carries a `provider` field
-  (openai / anthropic / moonshot / google) and already includes **gemini**. This is the
+  (openai / anthropic / moonshot). This is the
   natural registry of "known agent types".
 - The import path is complete: `AgentImportModal` (App.jsx:1383) →
   `importAgents` (main.cjs:646, with dryRun) → `validateImportedAgentDraft` (:577, which
@@ -59,7 +59,7 @@ plus package-manager directories, run `--version` to confirm runnability, distin
 ### A1. Detection registry (reuse presets)
 
 Use `builtinAgentPresets()` as the source of "known agent types" — no separate registry.
-Each preset's `id` is the type key (codex / claude / kimi / gemini) and `command` is the
+Each preset's `id` is the type key (codex / claude / kimi) and `command` is the
 probe target. Add two optional preset fields:
 
 - `versionArgs` — defaults to `["--version"]`.

@@ -133,23 +133,69 @@ const browserPreviewApi = {
   sendInput: async () => {},
   resizeAgent: async () => {},
   scrollAgent: async () => false,
+  listRoles: async () => [
+    { id: "designer", title: "产品设计师 / 视觉与交互", emoji: "🎨", summary: "把需求转成界面设计、交互流程与示意图", source: "global", hired: true },
+    { id: "manager", title: "总经理 / 项目负责人", emoji: "🧭", summary: "拆计划、控风险、推进交付", source: "global", hired: false },
+    { id: "prd", title: "PRD / 产品需求文档", emoji: "📋", summary: "沉淀需求背景、流程和验收标准", source: "global", hired: false }
+  ],
+  hireRole: async (roleId) => ({ ok: true, persona_dir: `.aiteam/crew/${roleId}` }),
+  importRole: async (sourcePath, options = {}) => ({
+    ok: true,
+    id: String(sourcePath || "").split("/").filter(Boolean).pop() || "imported",
+    dest: options.dest || "workspace",
+    warnings: ["Browser preview: imports are not persisted."]
+  }),
+  pickDirectory: async () => null,
+  loadRoleDetail: async (roleId) => ({
+    id: roleId,
+    source: `/preview/.aiteam/roles/${roleId}`,
+    library: "/preview/.aiteam/roles",
+    origin: "workspace",
+    editable: true,
+    defaultRuntime: "claude",
+    autonomy: "auto",
+    runtimes: {
+      claude: { command: "claude", args: ["--dangerously-skip-permissions"], instructions_file: "CLAUDE.md", skills_dir: ".claude/skills" },
+      codex: { command: "codex", args: ["--dangerously-bypass-approvals-and-sandbox"], instructions_file: "AGENTS.md", skills_dir: ".codex/skills" }
+    },
+    template: {
+      id: roleId,
+      name: roleId,
+      role: { title: roleId, emoji: "🧩", summary: "Preview role", track: "impl" },
+      default_runtime: "claude",
+      autonomy: "auto",
+      skills: ["frontend-ui"],
+      persona_file: "CLAUDE.md",
+      version: "0.0.0",
+      model: "opus",
+      runtimes: {
+        claude: { command: "claude", args: ["--dangerously-skip-permissions"], instructions_file: "CLAUDE.md", skills_dir: ".claude/skills" },
+        codex: { command: "codex", args: ["--dangerously-bypass-approvals-and-sandbox"], instructions_file: "AGENTS.md", skills_dir: ".codex/skills" }
+      },
+      collab: { upstream: ["prd"], downstream: ["qa"], handoff_via: ".aiteam/tasks/" }
+    },
+    persona: { file: "CLAUDE.md", content: "# Preview persona\n（浏览器预览，不会持久化）\n" },
+    skillDirs: ["frontend-ui"]
+  }),
+  saveRole: async (roleId) => ({ ok: true, id: roleId, origin: "workspace", warnings: ["Browser preview: changes are not persisted."] }),
+  deleteRole: async (roleId) => ({ ok: true, removed: roleId, origin: "workspace", affectedAgents: [] }),
+  assignAgentRole: async (agentId, roleId) => ({ ok: true, agent: { id: agentId, role_id: roleId || null, role: roleId ? { title: roleId } : null } }),
+  assignAgentType: async (agentId, agentType) => ({ ok: true, agent: { id: agentId, type: agentType, name: agentType } }),
   routeMessage: async (message, targets) => ({ targets: targets.length ? targets : ["codex"], message }),
   openPath: async () => {},
   openExternal: async () => true,
   listAgentPresets: async () => [
     { id: "codex", name: "Codex", command: "codex", args: [], cwd: ".", enabled: true, provider: "openai", versionArgs: ["--version"], docUrl: "https://github.com/openai/codex" },
     { id: "claude", name: "Claude Code", command: "claude", args: [], cwd: ".", enabled: true, provider: "anthropic", versionArgs: ["--version"], docUrl: "https://docs.claude.com/claude-code" },
-    { id: "kimi", name: "Kimi", command: "kimi", args: [], cwd: ".", enabled: true, provider: "moonshot", versionArgs: ["--version"], docUrl: "https://platform.moonshot.cn" },
-    { id: "gemini", name: "Gemini CLI", command: "gemini", args: [], cwd: ".", enabled: true, provider: "google", versionArgs: ["--version"], docUrl: "https://github.com/google-gemini/gemini-cli" }
+    { id: "kimi", name: "Kimi", command: "kimi", args: [], cwd: ".", enabled: true, provider: "moonshot", versionArgs: ["--version"], docUrl: "https://platform.moonshot.cn" }
   ],
   detectAgents: async () => [
     { type: "codex", name: "Codex", command: "codex", provider: "openai", installed: true, runnable: true, version: "0.1.0", path: "/usr/local/bin/codex", source: "path", diagnostic: null, docUrl: "https://github.com/openai/codex" },
     { type: "claude", name: "Claude Code", command: "claude", provider: "anthropic", installed: true, runnable: true, version: "1.2.3", path: "/usr/local/bin/claude", source: "path", diagnostic: null, docUrl: "https://docs.claude.com/claude-code" },
-    { type: "kimi", name: "Kimi", command: "kimi", provider: "moonshot", installed: false, runnable: false, version: null, path: null, source: null, diagnostic: null, docUrl: "https://platform.moonshot.cn" },
-    { type: "gemini", name: "Gemini CLI", command: "gemini", provider: "google", installed: true, runnable: false, version: null, path: "/usr/local/bin/gemini", source: "path", diagnostic: "spawn error (preview)", docUrl: "https://github.com/google-gemini/gemini-cli" }
+    { type: "kimi", name: "Kimi", command: "kimi", provider: "moonshot", installed: false, runnable: false, version: null, path: null, source: null, diagnostic: null, docUrl: "https://platform.moonshot.cn" }
   ],
   importAgents: async (payload, options = {}) => {
-    const PREVIEW_PRESET_COMMANDS = { codex: "codex", claude: "claude", kimi: "kimi", gemini: "gemini" };
+    const PREVIEW_PRESET_COMMANDS = { codex: "codex", claude: "claude", kimi: "kimi" };
     const drafts = Array.isArray(payload)
       ? payload
       : Array.isArray(payload?.agents)
@@ -177,7 +223,6 @@ const browserPreviewApi = {
     }
     return { ok, agents, imported: ok && !options.dryRun ? agents.map((agent) => agent.id) : [], limitError: null };
   },
-  removeAgent: async (agentId) => ({ ok: true, removed: agentId, remaining: [] }),
   // Emit small sample output in browser preview without real agents.
   onAgentData: (callback) => {
     const timer = setInterval(() => callback({ id: "codex", data: "·" }), 1400);
@@ -226,6 +271,36 @@ function stoppedOrExited(agent) {
     agent.status === "missing_runtime" ||
     agent.status === "pane_missing"
   );
+}
+
+function agentDisplayName(agent) {
+  const roleTitle = String(agent?.role?.title || "").trim();
+  if (roleTitle) {
+    const roleEmoji = String(agent?.role?.emoji || "").trim();
+    return [roleEmoji, roleTitle].filter(Boolean).join(" ");
+  }
+  return agent?.name || agent?.id || "";
+}
+
+function agentPanelTitle(agent) {
+  return [agentDisplayName(agent), agentRuntimeLabel(agent)].filter(Boolean).join(" + ");
+}
+
+function agentRuntimeLabel(agent) {
+  const type = String(agent?.type || "").trim().toLowerCase();
+  const command = String(agent?.command || "").trim().split(/\s+/)[0];
+  const base = type === "codex"
+    ? "Codex"
+    : type === "claude"
+      ? "Claude"
+      : type === "kimi"
+        ? "Kimi"
+        : agent?.name || command || agent?.id || "Agent";
+  const name = String(agent?.name || "").trim();
+  if (name && name !== base && !name.toLowerCase().startsWith(base.toLowerCase())) {
+    return `${base} · ${name}`;
+  }
+  return name || base;
 }
 
 function staleRouteNotice(value) {
@@ -809,8 +884,9 @@ function AgentTerminal({ agent, active, hidden, terminalTheme, onFocus, onNotice
     `Raw status: ${rawStatus}`,
     agent.reason ? `Reason: ${agent.reason}` : ""
   ].filter(Boolean).join("\n");
+  const displayName = agentPanelTitle(agent);
   const terminalTitle = [
-    agent.name,
+    displayName,
     [agent.backend || "direct-pty", agent.pane].filter(Boolean).join(" ")
   ].filter(Boolean).join(" · ");
 
@@ -827,7 +903,7 @@ function AgentTerminal({ agent, active, hidden, terminalTheme, onFocus, onNotice
     >
       <header className="terminal-header">
         <div>
-          <div className="terminal-name" title={terminalTitle}>{agent.name}</div>
+          <div className="terminal-name" title={terminalTitle}>{displayName}</div>
         </div>
         <div className={`status-pill ${statusClass(agent.status)}`} title={statusTitle}>
           <span className="status-dot" />
@@ -839,9 +915,400 @@ function AgentTerminal({ agent, active, hidden, terminalTheme, onFocus, onNotice
   );
 }
 
+function linesToArray(text) {
+  return String(text || "").split("\n").map((line) => line.trim()).filter(Boolean);
+}
+
+function csvToArray(text) {
+  return String(text || "").split(",").map((item) => item.trim()).filter(Boolean);
+}
+
+function blankRuntimeForm(runtime) {
+  const isCodex = runtime === "codex";
+  return {
+    command: isCodex ? "codex" : "claude",
+    argsText: "",
+    instructionsFile: isCodex ? "AGENTS.md" : "CLAUDE.md",
+    skillsDir: isCodex ? ".codex/skills" : ".claude/skills"
+  };
+}
+
+function blankRoleForm() {
+  return {
+    title: "", emoji: "", summary: "", track: "",
+    defaultRuntime: "claude", autonomy: "auto",
+    runtimes: { claude: blankRuntimeForm("claude"), codex: blankRuntimeForm("codex") },
+    model: "", skillsText: "",
+    upstreamText: "", downstreamText: "", handoffVia: "", persona: ""
+  };
+}
+
+function runtimeViewToForm(rt, runtime) {
+  if (!rt) return blankRuntimeForm(runtime);
+  return {
+    command: String(rt.command || (runtime === "codex" ? "codex" : "claude")),
+    argsText: (Array.isArray(rt.args) ? rt.args : []).join("\n"),
+    instructionsFile: String(rt.instructions_file || (runtime === "codex" ? "AGENTS.md" : "CLAUDE.md")),
+    skillsDir: String(rt.skills_dir || (runtime === "codex" ? ".codex/skills" : ".claude/skills"))
+  };
+}
+
+function detailToForm(detail) {
+  const template = detail?.template || {};
+  const role = template.role && typeof template.role === "object" ? template.role : {};
+  const collab = template.collab && typeof template.collab === "object" ? template.collab : {};
+  const detailRuntimes = detail?.runtimes && typeof detail.runtimes === "object" ? detail.runtimes : {};
+  return {
+    title: String(role.title || ""),
+    emoji: String(role.emoji || ""),
+    summary: String(role.summary || ""),
+    track: String(role.track || ""),
+    defaultRuntime: String(detail?.defaultRuntime || "claude"),
+    autonomy: String(detail?.autonomy || "auto"),
+    runtimes: {
+      claude: runtimeViewToForm(detailRuntimes.claude, "claude"),
+      codex: runtimeViewToForm(detailRuntimes.codex, "codex")
+    },
+    model: String(template.model || ""),
+    skillsText: (Array.isArray(template.skills) ? template.skills : []).join(", "),
+    upstreamText: (Array.isArray(collab.upstream) ? collab.upstream : []).join(", "),
+    downstreamText: (Array.isArray(collab.downstream) ? collab.downstream : []).join(", "),
+    handoffVia: String(collab.handoff_via || ""),
+    persona: String(detail?.persona?.content || "")
+  };
+}
+
+function RoleConfigModal({ api, roles, onClose, onRolesChanged }) {
+  const [tab, setTab] = useState("list");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  // import tab
+  const [importDest, setImportDest] = useState("workspace");
+  const [importId, setImportId] = useState("");
+  // edit tab
+  const [editing, setEditing] = useState(null); // { id, origin }
+  const [form, setForm] = useState(blankRoleForm());
+  const [dirty, setDirty] = useState(false);
+
+  const closeGuarded = useCallback(() => {
+    if (dirty && !window.confirm("有未保存的修改，确定关闭吗？")) {
+      return;
+    }
+    onClose();
+  }, [dirty, onClose]);
+
+  useEffect(() => {
+    const onKey = (event) => {
+      if (event.key === "Escape") {
+        event.stopPropagation();
+        closeGuarded();
+      }
+    };
+    document.addEventListener("keydown", onKey, true);
+    return () => document.removeEventListener("keydown", onKey, true);
+  }, [closeGuarded]);
+
+  const updateForm = (patch) => {
+    setForm((current) => ({ ...current, ...patch }));
+    setDirty(true);
+  };
+
+  const updateRuntime = (runtime, patch) => {
+    setForm((current) => ({
+      ...current,
+      runtimes: { ...current.runtimes, [runtime]: { ...current.runtimes[runtime], ...patch } }
+    }));
+    setDirty(true);
+  };
+
+  const openImport = async () => {
+    setError("");
+    try {
+      if (!api.pickDirectory || !api.importRole) {
+        setError("当前环境不支持导入。");
+        return;
+      }
+      const sourcePath = await api.pickDirectory({ title: "选择一个外部 Agent / Role 文件夹" });
+      if (!sourcePath) return;
+      setBusy(true);
+      const options = { dest: importDest };
+      if (importId.trim()) options.id = importId.trim();
+      const result = await api.importRole(sourcePath, options);
+      await onRolesChanged();
+      setImportId("");
+      setTab("list");
+      const warn = Array.isArray(result?.warnings) && result.warnings.length ? ` (${result.warnings.join(" ")})` : "";
+      setError(`已导入：${result?.id || sourcePath}${warn}`);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const openEdit = async (roleId) => {
+    setError("");
+    setBusy(true);
+    try {
+      const detail = await api.loadRoleDetail(roleId);
+      setEditing({ id: detail.id, origin: detail.origin });
+      setForm(detailToForm(detail));
+      setDirty(false);
+      setTab("edit");
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const save = async () => {
+    if (!editing) return;
+    setError("");
+    setBusy(true);
+    try {
+      const payload = {
+        role: { title: form.title, emoji: form.emoji, summary: form.summary, track: form.track },
+        default_runtime: form.defaultRuntime,
+        autonomy: form.autonomy,
+        runtimes: {
+          claude: {
+            command: form.runtimes.claude.command,
+            args: linesToArray(form.runtimes.claude.argsText),
+            instructions_file: form.runtimes.claude.instructionsFile,
+            skills_dir: form.runtimes.claude.skillsDir
+          },
+          codex: {
+            command: form.runtimes.codex.command,
+            args: linesToArray(form.runtimes.codex.argsText),
+            instructions_file: form.runtimes.codex.instructionsFile,
+            skills_dir: form.runtimes.codex.skillsDir
+          }
+        },
+        model: form.model,
+        skills: csvToArray(form.skillsText),
+        collab: {
+          upstream: csvToArray(form.upstreamText),
+          downstream: csvToArray(form.downstreamText),
+          handoff_via: form.handoffVia
+        },
+        persona: { content: form.persona }
+      };
+      const options = editing.origin === "global" ? { promoteToWorkspace: true } : {};
+      const result = await api.saveRole(editing.id, payload, options);
+      await onRolesChanged();
+      setDirty(false);
+      setEditing({ id: result.id, origin: result.origin });
+      const warn = Array.isArray(result?.warnings) && result.warnings.length ? ` (${result.warnings.join(" ")})` : "";
+      setError(`已保存：${result.id}${warn}`);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const removeRole = async (roleId, origin) => {
+    const isGlobal = origin === "global";
+    const prompt = isGlobal
+      ? `「${roleId}」是全局 Role，删除会影响所有项目。确定删除吗？`
+      : `确定删除 Role「${roleId}」吗？`;
+    if (!window.confirm(prompt)) return;
+    setError("");
+    setBusy(true);
+    try {
+      const result = await api.deleteRole(roleId, isGlobal ? { allowGlobal: true } : {});
+      await onRolesChanged();
+      if (editing?.id === roleId) {
+        setEditing(null);
+        setForm(blankRoleForm());
+        setDirty(false);
+        setTab("list");
+      }
+      const affected = Array.isArray(result?.affectedAgents) && result.affectedAgents.length
+        ? `（${result.affectedAgents.length} 个成员仍引用，需重新分配）`
+        : "";
+      setError(`已删除：${roleId}${affected}`);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="role-modal-overlay" onMouseDown={(event) => { if (event.target === event.currentTarget) closeGuarded(); }}>
+      <div className="role-modal" role="dialog" aria-label="配置 Agent / Role">
+        <div className="role-modal-header">
+          <strong>配置 Agent</strong>
+          <button type="button" className="role-modal-close" onClick={closeGuarded} aria-label="关闭">✕</button>
+        </div>
+        <div className="role-modal-tabs">
+          <button type="button" className={`role-modal-tab ${tab === "list" ? "role-modal-tab-active" : ""}`} onClick={() => setTab("list")}>Role 列表</button>
+          <button type="button" className={`role-modal-tab ${tab === "import" ? "role-modal-tab-active" : ""}`} onClick={() => setTab("import")}>导入</button>
+          <button type="button" className={`role-modal-tab ${tab === "edit" ? "role-modal-tab-active" : ""}`} onClick={() => setTab("edit")} disabled={!editing}>编辑{editing ? `：${editing.id}` : ""}</button>
+        </div>
+
+        {error ? <div className="role-modal-error" onClick={() => setError("")}>{error}</div> : null}
+
+        <div className="role-modal-body">
+          {tab === "list" ? (
+            <div className="role-list">
+              {roles.length ? roles.map((role) => (
+                <div key={role.id} className="role-list-row">
+                  <span className="role-list-main">
+                    <span className="role-list-emoji">{role.emoji || "🧩"}</span>
+                    <span className="role-list-title">{role.title || role.id}</span>
+                    <span className="role-list-id">{role.id}</span>
+                    <span className={`role-source-badge role-source-${role.source || "global"}`}>{role.source || "global"}</span>
+                    {role.hired ? <span className="role-source-badge">已雇</span> : null}
+                  </span>
+                  <span className="role-list-actions">
+                    <button type="button" className="panel-action" disabled={busy} onClick={() => openEdit(role.id)}>编辑</button>
+                    <button type="button" className="panel-action role-danger" disabled={busy} onClick={() => removeRole(role.id, role.source)}>删除</button>
+                  </span>
+                </div>
+              )) : <div className="role-empty">还没有 Role。切到「导入」从本地文件夹导入一个外部 Agent。</div>}
+            </div>
+          ) : null}
+
+          {tab === "import" ? (
+            <div className="role-import-panel">
+              <div className="role-field">
+                <label>导入到</label>
+                <select value={importDest} onChange={(event) => setImportDest(event.target.value)}>
+                  <option value="workspace">当前工作区（.aiteam/roles）</option>
+                  <option value="global">全局库（~/.aiteam/roles）</option>
+                </select>
+              </div>
+              <div className="role-field">
+                <label>自定义 Role ID（可选，留空用源目录的 id）</label>
+                <input value={importId} onChange={(event) => setImportId(event.target.value)} placeholder="例如 my-frontend" />
+              </div>
+              <p className="role-hint">源文件夹需包含 role.json、persona 文件（默认 CLAUDE.md）、以及至少一个 .claude/skills/&lt;名&gt;/SKILL.md。</p>
+              <button type="button" className="panel-action" disabled={busy} onClick={openImport}>选择文件夹并导入…</button>
+            </div>
+          ) : null}
+
+          {tab === "edit" && editing ? (
+            <div className="role-edit-form">
+              {editing.origin === "global" ? (
+                <div className="role-hint role-hint-warn">这是全局 Role，保存将创建一份当前工作区的副本（全局原件不变）。</div>
+              ) : null}
+              <div className="role-field">
+                <label>Role ID（不可改）</label>
+                <input value={editing.id} disabled />
+              </div>
+              <div className="role-field-row">
+                <div className="role-field">
+                  <label>标题</label>
+                  <input value={form.title} onChange={(event) => updateForm({ title: event.target.value })} />
+                </div>
+                <div className="role-field role-field-narrow">
+                  <label>Emoji</label>
+                  <input value={form.emoji} onChange={(event) => updateForm({ emoji: event.target.value })} />
+                </div>
+                <div className="role-field role-field-narrow">
+                  <label>Track</label>
+                  <input value={form.track} onChange={(event) => updateForm({ track: event.target.value })} placeholder="impl / plan / qa" />
+                </div>
+              </div>
+              <div className="role-field">
+                <label>摘要</label>
+                <textarea rows={2} value={form.summary} onChange={(event) => updateForm({ summary: event.target.value })} />
+              </div>
+              <div className="role-field-row">
+                <div className="role-field">
+                  <label>默认运行时</label>
+                  <select value={form.defaultRuntime} onChange={(event) => updateForm({ defaultRuntime: event.target.value })}>
+                    <option value="claude">Claude</option>
+                    <option value="codex">Codex</option>
+                  </select>
+                </div>
+                <div className="role-field">
+                  <label>Autonomy</label>
+                  <select value={form.autonomy} onChange={(event) => updateForm({ autonomy: event.target.value })}>
+                    <option value="auto">auto（自动）</option>
+                    <option value="human">human（需人工）</option>
+                  </select>
+                </div>
+                <div className="role-field">
+                  <label>Model（留空=不指定）</label>
+                  <input value={form.model} onChange={(event) => updateForm({ model: event.target.value })} placeholder="opus" />
+                </div>
+              </div>
+
+              {["claude", "codex"].map((rtName) => (
+                <div key={rtName} className="role-runtime-block">
+                  <div className="role-runtime-title">
+                    运行时：{rtName === "claude" ? "Claude" : "Codex"}
+                    {form.defaultRuntime === rtName ? <span className="role-source-badge role-source-workspace">默认</span> : null}
+                  </div>
+                  <div className="role-field-row">
+                    <div className="role-field">
+                      <label>Command</label>
+                      <input value={form.runtimes[rtName].command} onChange={(event) => updateRuntime(rtName, { command: event.target.value })} placeholder={rtName} />
+                    </div>
+                    <div className="role-field">
+                      <label>指令文件</label>
+                      <input value={form.runtimes[rtName].instructionsFile} onChange={(event) => updateRuntime(rtName, { instructionsFile: event.target.value })} placeholder={rtName === "codex" ? "AGENTS.md" : "CLAUDE.md"} />
+                    </div>
+                    <div className="role-field">
+                      <label>Skills 目录</label>
+                      <input value={form.runtimes[rtName].skillsDir} onChange={(event) => updateRuntime(rtName, { skillsDir: event.target.value })} placeholder={rtName === "codex" ? ".codex/skills" : ".claude/skills"} />
+                    </div>
+                  </div>
+                  <div className="role-field">
+                    <label>Args（一行一个参数）</label>
+                    <textarea rows={2} value={form.runtimes[rtName].argsText} onChange={(event) => updateRuntime(rtName, { argsText: event.target.value })} placeholder={rtName === "codex" ? "--dangerously-bypass-approvals-and-sandbox" : "--dangerously-skip-permissions"} />
+                  </div>
+                </div>
+              ))}
+
+              <div className="role-field">
+                <label>Skills（逗号分隔）</label>
+                <input value={form.skillsText} onChange={(event) => updateForm({ skillsText: event.target.value })} placeholder="frontend-ui, design" />
+              </div>
+              <div className="role-field-row">
+                <div className="role-field">
+                  <label>协作 · 上游（逗号分隔）</label>
+                  <input value={form.upstreamText} onChange={(event) => updateForm({ upstreamText: event.target.value })} placeholder="prd, manager" />
+                </div>
+                <div className="role-field">
+                  <label>协作 · 下游（逗号分隔）</label>
+                  <input value={form.downstreamText} onChange={(event) => updateForm({ downstreamText: event.target.value })} placeholder="qa" />
+                </div>
+              </div>
+              <div className="role-field">
+                <label>协作 · 交接路径</label>
+                <input value={form.handoffVia} onChange={(event) => updateForm({ handoffVia: event.target.value })} placeholder=".aiteam/tasks/" />
+              </div>
+              <div className="role-field role-field-persona">
+                <label>Persona 正文（写入默认运行时的指令文件 {form.runtimes?.[form.defaultRuntime]?.instructionsFile || "CLAUDE.md"}）</label>
+                <textarea value={form.persona} onChange={(event) => updateForm({ persona: event.target.value })} spellCheck={false} />
+              </div>
+            </div>
+          ) : null}
+        </div>
+
+        {tab === "edit" && editing ? (
+          <div className="role-modal-footer">
+            <button type="button" className="panel-action role-danger" disabled={busy} onClick={() => removeRole(editing.id, editing.origin)}>删除</button>
+            <span className="role-modal-footer-spacer" />
+            <button type="button" className="panel-action" disabled={busy} onClick={closeGuarded}>取消</button>
+            <button type="button" className="panel-action role-primary" disabled={busy || !dirty} onClick={save}>保存</button>
+          </div>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
 function Sidebar({
   workspace,
   agents,
+  roles,
+  agentTypes,
   documents,
   activeAgentId,
   minimizedAgents,
@@ -852,7 +1319,6 @@ function Sidebar({
   handoffPath,
   onThemeChange,
   onToggleEffects,
-  onOpenImport,
   onToggleCollapsed,
   onSelectAgent,
   onSelectWorkspace,
@@ -860,8 +1326,10 @@ function Sidebar({
   onToggleDocumentPinned,
   onStart,
   onStop,
-  onRemove,
   onToggleMinimize,
+  onAssignRole,
+  onAssignType,
+  onImportRole,
   onStartEnabled,
   onStopEnabled,
   onOpen,
@@ -1030,21 +1498,31 @@ function Sidebar({
         </div>
       </div>
 
-      <div className="sidebar-bulk-actions" aria-label="Agent batch controls">
+      <div className="sidebar-bulk-actions" aria-label="Team batch controls">
         <button type="button" onClick={onStartEnabled}>Start</button>
         <button type="button" onClick={onStopEnabled}>Stop</button>
       </div>
 
       <section className="panel">
         <div className="panel-heading">
-          <div className="panel-title">Agents</div>
-          <button className="panel-action" type="button" title="Import agents" onClick={onOpenImport}>
-            Import
-          </button>
+          <div className="panel-title">Team</div>
+          {onImportRole ? (
+            <button
+              type="button"
+              className="panel-action"
+              title="导入外部 Agent、查看与编辑 Role 配置"
+              onClick={onImportRole}
+            >
+              配置 Agent
+            </button>
+          ) : null}
         </div>
         <div className="agent-list">
         {agents.map((agent) => {
           const minimized = agent.enabled && !stoppedOrExited(agent) && minimizedAgents?.has(agent.id);
+          const displayName = agentDisplayName(agent);
+          const assignedRoleId = agent.role_id || (agent.role && roles.some((role) => role.id === agent.id) ? agent.id : "");
+          const assignedAgentType = agent.type || agent.id || "";
           return (
             <div
               key={agent.id}
@@ -1064,11 +1542,45 @@ function Sidebar({
                   onSelectAgent(agent.id);
                 }
               }}
-              title={agent.name}
+              title={displayName}
             >
               <span className={`agent-dot ${statusClass(agent.status)}`} />
               <span className="agent-main">
-                <span>{agent.name}</span>
+                <select
+                  className="agent-role-select"
+                  value={assignedRoleId}
+                  title="Role"
+                  onClick={(event) => event.stopPropagation()}
+                  onKeyDown={(event) => event.stopPropagation()}
+                  onChange={(event) => {
+                    event.stopPropagation();
+                    onAssignRole(agent.id, event.target.value);
+                  }}
+                >
+                  <option value="">Role</option>
+                  {roles.map((role) => (
+                    <option key={role.id} value={role.id}>
+                      {[role.emoji, role.title || role.id].filter(Boolean).join(" ")}
+                    </option>
+                  ))}
+                </select>
+                <select
+                  className="agent-type-select"
+                  value={assignedAgentType}
+                  title="Agent"
+                  onClick={(event) => event.stopPropagation()}
+                  onKeyDown={(event) => event.stopPropagation()}
+                  onChange={(event) => {
+                    event.stopPropagation();
+                    onAssignType(agent.id, event.target.value);
+                  }}
+                >
+                  {agentTypes.map((type) => (
+                    <option key={type.id} value={type.id}>
+                      {type.name || type.id}
+                    </option>
+                  ))}
+                </select>
               </span>
               <span className="agent-actions">
                 {!agent.enabled ? (
@@ -1116,18 +1628,6 @@ function Sidebar({
                     </button>
                   </>
                 )}
-                <button
-                  className="icon-button agent-remove"
-                  type="button"
-                  title="Remove agent from config"
-                  aria-label={`Remove ${agent.name}`}
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    onRemove(agent.id);
-                  }}
-                >
-                  🗑
-                </button>
               </span>
             </div>
           );
@@ -1448,329 +1948,12 @@ const Composer = forwardRef(function Composer({ agents, documents, activeAgentId
   );
 });
 
-const IMPORT_JSON_PLACEHOLDER = `{
-  "agents": [
-    {
-      "id": "my-agent",
-      "name": "My Agent",
-      "command": "my-agent-cli",
-      "args": [],
-      "cwd": ".",
-      "enabled": true
-    }
-  ]
-}`;
-
-const MAX_AGENTS = 3;
-
-function AgentImportModal({ onClose, onImported, onNotice, existingCount = 0, existingIds = [] }) {
-  const [source, setSource] = useState("preset");
-  const [presets, setPresets] = useState([]);
-  const [presetId, setPresetId] = useState("");
-  const [detections, setDetections] = useState([]);
-  const [jsonText, setJsonText] = useState("");
-  const [review, setReview] = useState(null);
-  const [error, setError] = useState("");
-  const [busy, setBusy] = useState(false);
-  const atLimit = existingCount >= MAX_AGENTS;
-
-  useEffect(() => {
-    let mounted = true;
-    Promise.all([
-      Promise.resolve().then(() => api.listAgentPresets?.() || []),
-      Promise.resolve().then(() => api.detectAgents?.() || [])
-    ])
-      .then(([list, detected]) => {
-        if (!mounted) return;
-        setPresets(Array.isArray(list) ? list : []);
-        setDetections(Array.isArray(detected) ? detected : []);
-        // Prefer defaulting to a type that is actually runnable on this machine.
-        const runnableId = Array.isArray(detected)
-          ? detected.find((item) => item.runnable)?.type
-          : "";
-        setPresetId((current) => current || runnableId || list?.[0]?.id || "");
-      })
-      .catch(() => {});
-    return () => {
-      mounted = false;
-    };
-  }, []);
-
-  const detectionByType = useMemo(() => {
-    const map = new Map();
-    for (const item of detections) {
-      map.set(item.type, item);
-    }
-    return map;
-  }, [detections]);
-
-  useEffect(() => {
-    const onKeyDown = (event) => {
-      if (event.key === "Escape") onClose();
-    };
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [onClose]);
-
-  const buildPayload = useCallback(() => {
-    if (source === "preset") {
-      const preset = presets.find((item) => item.id === presetId);
-      if (!preset) throw new Error("Choose an agent type first.");
-      // Build an instance from the picked type: generate a unique instance id like
-      // claude-1 / claude-2, derive a numbered display name, and let the main process
-      // inherit command/args from the type. This is what allows duplicates of one type.
-      const taken = new Set(existingIds);
-      let n = 1;
-      let instanceId = `${preset.id}-${n}`;
-      while (taken.has(instanceId)) {
-        n += 1;
-        instanceId = `${preset.id}-${n}`;
-      }
-      return {
-        agents: [
-          {
-            id: instanceId,
-            type: preset.id,
-            name: `${preset.name} #${n}`
-          }
-        ]
-      };
-    }
-    const text = jsonText.trim();
-    if (!text) throw new Error("Paste an agent config JSON first.");
-    let parsed;
-    try {
-      parsed = JSON.parse(text);
-    } catch (parseError) {
-      throw new Error(`Invalid JSON: ${parseError.message}`);
-    }
-    return parsed;
-  }, [existingIds, jsonText, presetId, presets, source]);
-
-  const reviewDraft = useCallback(async () => {
-    setBusy(true);
-    setError("");
-    try {
-      const payload = buildPayload();
-      const result = await api.importAgents(payload, { dryRun: true });
-      setReview({ payload, ...result });
-    } catch (reviewError) {
-      setReview(null);
-      setError(reviewError.message);
-    } finally {
-      setBusy(false);
-    }
-  }, [buildPayload]);
-
-  const confirmImport = useCallback(async () => {
-    if (!review?.ok || !review.payload) return;
-    setBusy(true);
-    setError("");
-    try {
-      const result = await api.importAgents(review.payload, {});
-      onNotice?.(
-        result?.imported?.length
-          ? `Imported ${result.imported.map((id) => `@${id}`).join(" ")}. Start them from the sidebar when ready.`
-          : ""
-      );
-      onImported();
-    } catch (importError) {
-      setError(importError.message);
-    } finally {
-      setBusy(false);
-    }
-  }, [onImported, onNotice, review]);
-
-  const invalidateReview = () => {
-    setReview(null);
-    setError("");
-  };
-
-  return (
-    <div
-      className="modal-overlay"
-      onClick={(event) => {
-        if (event.target === event.currentTarget) onClose();
-      }}
-    >
-      <div className="modal" role="dialog" aria-modal="true" aria-label="Import agents">
-        <header className="modal-header">
-          <div className="modal-title">Import agents</div>
-          <button className="sidebar-icon-button" type="button" aria-label="Close" onClick={onClose}>
-            x
-          </button>
-        </header>
-        <div className="modal-body">
-          <div className="import-tabs" role="tablist" aria-label="Import source">
-            {[
-              { id: "preset", label: "Preset" },
-              { id: "json", label: "Local JSON" }
-            ].map((tab) => (
-              <button
-                key={tab.id}
-                type="button"
-                role="tab"
-                aria-selected={source === tab.id}
-                className={source === tab.id ? "import-tab-active" : ""}
-                onClick={() => {
-                  setSource(tab.id);
-                  invalidateReview();
-                }}
-              >
-                {tab.label}
-              </button>
-            ))}
-          </div>
-
-          {source === "preset" ? (
-            <>
-              <label className="import-field">
-                <span>Agent type</span>
-                <select
-                  value={presetId}
-                  onChange={(event) => {
-                    setPresetId(event.target.value);
-                    invalidateReview();
-                  }}
-                >
-                  {presets.map((preset) => {
-                    const detection = detectionByType.get(preset.id);
-                    const dot = !detection || !detection.installed ? "○" : detection.runnable ? "●" : "◐";
-                    return (
-                      <option key={preset.id} value={preset.id}>
-                        {dot} {preset.name} ({preset.command})
-                        {detection?.version ? ` · v${detection.version}` : ""}
-                        {detection && !detection.installed ? " · 未安装" : ""}
-                        {detection?.installed && !detection.runnable ? " · 无法运行" : ""}
-                      </option>
-                    );
-                  })}
-                </select>
-              </label>
-              {(() => {
-                const detection = detectionByType.get(presetId);
-                if (!detection) return null;
-                if (detection.runnable) {
-                  return (
-                    <div className="import-detect import-detect-ok">
-                      ● 已检测到{detection.version ? ` v${detection.version}` : ""}
-                      {detection.source && detection.source !== "path" ? `（来源：${detection.source}）` : ""}
-                      {detection.path ? <div className="import-detect-path"><code>{detection.path}</code></div> : null}
-                    </div>
-                  );
-                }
-                if (detection.installed) {
-                  return (
-                    <div className="import-detect import-detect-warn">
-                      ◐ 已安装但无法运行：{detection.diagnostic || "未知错误"}
-                    </div>
-                  );
-                }
-                return (
-                  <div className="import-detect import-detect-missing">
-                    ○ 本机未检测到 <code>{detection.command}</code>。
-                    {detection.docUrl ? (
-                      <>
-                        {" "}
-                        <a
-                          href="#"
-                          onClick={(event) => {
-                            event.preventDefault();
-                            api.openExternal?.(detection.docUrl);
-                          }}
-                        >
-                          查看安装指引
-                        </a>
-                      </>
-                    ) : null}
-                  </div>
-                );
-              })()}
-            </>
-          ) : (
-            <label className="import-field">
-              <span>Agent config JSON</span>
-              <textarea
-                value={jsonText}
-                placeholder={IMPORT_JSON_PLACEHOLDER}
-                spellCheck={false}
-                onChange={(event) => {
-                  setJsonText(event.target.value);
-                  invalidateReview();
-                }}
-              />
-            </label>
-          )}
-
-          <div className="import-hint">
-            Imported agents are saved as drafts in your agent config and never start automatically. Unknown
-            fields are kept as-is and ignored by the app.
-            <div className="import-hint-limit">
-              当前已配置 {existingCount} / {MAX_AGENTS} 个 agent。同类型可重复添加（如两个 Claude），最多 {MAX_AGENTS} 个。
-            </div>
-          </div>
-
-          {atLimit ? (
-            <div className="modal-error">已达到上限：最多配置 {MAX_AGENTS} 个 agent。请先在侧边栏移除一个再添加。</div>
-          ) : null}
-          {review?.limitError ? <div className="modal-error">{review.limitError}</div> : null}
-
-          {review?.agents?.length ? (
-            <div className="import-review">
-              {review.agents.map((agent, index) => (
-                <div className="import-review-item" key={`${agent.id || "agent"}:${index}`}>
-                  <h4>
-                    {agent.name || agent.id || "(missing id)"}
-                    {agent.enabled === false ? " · disabled" : ""}
-                  </h4>
-                  <div className="import-review-line">
-                    Command: <code>{[agent.command, ...(agent.args || [])].filter(Boolean).join(" ") || "—"}</code>
-                  </div>
-                  <div className="import-review-line">CWD: <code>{agent.cwd || "."}</code></div>
-                  {(agent.errors || []).map((message, errorIndex) => (
-                    <div className="import-error" key={`error:${errorIndex}`}>✗ {message}</div>
-                  ))}
-                  {(agent.warnings || []).map((message, warningIndex) => (
-                    <div className="import-warning" key={`warning:${warningIndex}`}>⚠ {message}</div>
-                  ))}
-                </div>
-              ))}
-            </div>
-          ) : null}
-
-          {error ? <div className="modal-error">{error}</div> : null}
-        </div>
-        <footer className="modal-footer">
-          <button className="modal-button" type="button" onClick={onClose} disabled={busy}>
-            Cancel
-          </button>
-          <button
-            className="modal-button"
-            type="button"
-            onClick={reviewDraft}
-            disabled={busy || atLimit}
-            title={atLimit ? `最多配置 ${MAX_AGENTS} 个 agent` : "Validate the draft"}
-          >
-            Review
-          </button>
-          <button
-            className="modal-button modal-button-primary"
-            type="button"
-            onClick={confirmImport}
-            disabled={busy || atLimit || !review?.ok}
-            title={atLimit ? `最多配置 ${MAX_AGENTS} 个 agent` : review?.ok ? "Save to agent config" : "Review the draft first"}
-          >
-            Import
-          </button>
-        </footer>
-      </div>
-    </div>
-  );
-}
-
 function App() {
   const [workspace, setWorkspace] = useState(null);
   const [agents, setAgents] = useState([]);
+  const [roles, setRoles] = useState([]);
+  const [roleConfigOpen, setRoleConfigOpen] = useState(false);
+  const [agentTypes, setAgentTypes] = useState([]);
   const [documents, setDocuments] = useState({ root: "", folder: "", folders: [], tree: null, documents: [] });
   const [activeAgentId, setActiveAgentId] = useState(null);
   const [notice, setNotice] = useState("");
@@ -1803,7 +1986,6 @@ function App() {
     }
   });
   const [taskPath, setTaskPath] = useState("");
-  const [importOpen, setImportOpen] = useState(false);
 
   useEffect(() => {
     try {
@@ -1905,9 +2087,6 @@ function App() {
       event.preventDefault();
       event.stopPropagation();
 
-      // A modal owns the keyboard while open; don't cycle behind it.
-      if (importOpen) return;
-
       const visible = agents.filter((agent) => !minimizedAgents.has(agent.id));
       if (visible.length <= 1) return;
 
@@ -1920,7 +2099,7 @@ function App() {
     };
     document.addEventListener("keydown", onKeyDown, true);
     return () => document.removeEventListener("keydown", onKeyDown, true);
-  }, [agents, activeAgentId, minimizedAgents, importOpen]);
+  }, [agents, activeAgentId, minimizedAgents]);
 
   const refreshAgents = useCallback(async () => {
     const nextAgents = await api.listAgents();
@@ -1929,16 +2108,20 @@ function App() {
   }, []);
 
   const loadWorkspaceData = useCallback(async () => {
-    const [workspaceInfo, documentInfo, agentList] = await Promise.all([
+    const [workspaceInfo, documentInfo, agentList, roleList, agentTypeList] = await Promise.all([
       api.getWorkspace(),
       api.listDocuments(""),
-      api.listAgents()
+      api.listAgents(),
+      Promise.resolve(api.listRoles?.() || []),
+      Promise.resolve(api.listAgentPresets?.() || [])
     ]);
     setWorkspace(workspaceInfo);
     setDocuments(documentInfo);
     setAgents(agentList);
+    setRoles(Array.isArray(roleList) ? roleList : []);
+    setAgentTypes(Array.isArray(agentTypeList) ? agentTypeList : []);
     setActiveAgentId(pickActiveAgentId(agentList, null, readMinimizedAgents(workspaceInfo?.root || "")));
-    return { workspaceInfo, documentInfo, agentList };
+    return { workspaceInfo, documentInfo, agentList, roleList, agentTypeList };
   }, []);
 
   const refreshDocuments = useCallback(async () => {
@@ -2018,22 +2201,38 @@ function App() {
     }
   };
 
-  const removeAgent = async (agentId) => {
-    const target = agents.find((agent) => agent.id === agentId);
-    const label = target?.name || agentId;
-    const confirmed = typeof window !== "undefined" && typeof window.confirm === "function"
-      ? window.confirm(`确认从配置中移除「${label}」？运行中的会先停止，可之后重新添加。`)
-      : true;
-    if (!confirmed) return;
+  const assignRole = async (agentId, roleId) => {
     try {
-      clearMinimized([agentId]);
-      await api.removeAgent?.(agentId);
+      const result = await api.assignAgentRole?.(agentId, roleId);
+      if (result?.agent) {
+        setAgents((current) => current.map((agent) => (agent.id === agentId ? { ...agent, ...result.agent } : agent)));
+      }
       await refreshAgents();
-      setNotice(`已移除 @${agentId}。`);
+      setNotice("");
     } catch (error) {
       setNotice(error.message);
     }
   };
+
+  const assignType = async (agentId, agentType) => {
+    try {
+      const result = await api.assignAgentType?.(agentId, agentType);
+      if (result?.agent) {
+        setAgents((current) => current.map((agent) => (agent.id === agentId ? { ...agent, ...result.agent } : agent)));
+      }
+      await refreshAgents();
+      setNotice("");
+    } catch (error) {
+      setNotice(error.message);
+    }
+  };
+
+  const refreshRoles = useCallback(async () => {
+    const roleList = await Promise.resolve(api.listRoles?.() || []);
+    setRoles(Array.isArray(roleList) ? roleList : []);
+  }, []);
+
+  const openRoleConfig = () => setRoleConfigOpen(true);
 
   const startEnabled = async () => {
     try {
@@ -2134,6 +2333,8 @@ function App() {
       <Sidebar
         workspace={workspace}
         agents={agents}
+        roles={roles}
+        agentTypes={agentTypes}
         documents={documents}
         activeAgentId={activeAgentId}
         minimizedAgents={minimizedAgents}
@@ -2144,7 +2345,6 @@ function App() {
         handoffPath={taskPath}
         onThemeChange={setThemeId}
         onToggleEffects={setEffectsEnabled}
-        onOpenImport={() => setImportOpen(true)}
         onToggleCollapsed={() => setSidebarCollapsed((current) => !current)}
         onSelectAgent={(agentId) => {
           const agent = agents.find((item) => item.id === agentId);
@@ -2160,8 +2360,10 @@ function App() {
         onToggleDocumentPinned={toggleDocumentPinned}
         onStart={startAgent}
         onStop={stopAgent}
-        onRemove={removeAgent}
         onToggleMinimize={toggleAgentMinimized}
+        onAssignRole={assignRole}
+        onAssignType={assignType}
+        onImportRole={openRoleConfig}
         onStartEnabled={startEnabled}
         onStopEnabled={stopEnabled}
         onOpen={(targetPath) => api.openPath(targetPath)}
@@ -2196,14 +2398,7 @@ function App() {
                 ? `${minimizedCount} agent panel${minimizedCount > 1 ? "s are" : " is"} minimized. Click an agent in the sidebar to restore it.`
                 : enabledAgents.length
                   ? "Start an agent from the sidebar to open its terminal."
-                  : (
-                    <div className="empty-state-actions">
-                      <div>No agents are configured in AI Teams.</div>
-                      <button className="empty-import" type="button" onClick={() => setImportOpen(true)}>
-                        Import agent
-                      </button>
-                    </div>
-                  )}
+                  : "No team slots are configured in AI Teams."}
             </div>
           ) : null}
         </section>
@@ -2218,16 +2413,12 @@ function App() {
           onRoute={route}
         />
       </main>
-      {importOpen ? (
-        <AgentImportModal
-          existingCount={agents.length}
-          existingIds={agents.map((agent) => agent.id)}
-          onClose={() => setImportOpen(false)}
-          onNotice={setNotice}
-          onImported={() => {
-            setImportOpen(false);
-            refreshAgents().catch((error) => setNotice(error.message));
-          }}
+      {roleConfigOpen ? (
+        <RoleConfigModal
+          api={api}
+          roles={roles}
+          onClose={() => setRoleConfigOpen(false)}
+          onRolesChanged={refreshRoles}
         />
       ) : null}
     </div>

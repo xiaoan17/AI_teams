@@ -39,7 +39,7 @@ assert.strictEqual(extractVersionString("no-numbers-here").length > 0, true);
 assert.strictEqual(inferSource("/homebrew/bin/codex"), "homebrew");
 assert.strictEqual(inferSource("/tmp/user/.nvm/versions/node/v20/bin/claude"), "nvm");
 assert.strictEqual(inferSource("/tmp/user/.volta/bin/kimi"), "volta");
-assert.strictEqual(inferSource("/usr/local/bin/gemini"), "path");
+assert.strictEqual(inferSource("/usr/local/bin/custom-agent"), "path");
 
 // --- buildAugmentedEnv: search dirs are prepended onto PATH, deduped ---------------------
 const env = buildAugmentedEnv(["/homebrew/bin", "/usr/local/bin"], { PATH: "/usr/local/bin:/bin" });
@@ -83,9 +83,9 @@ assert.strictEqual(runnable.provider, "anthropic");
 
 // --- detectAgentType: installed but not runnable ----------------------------------------
 const broken = detectAgentType(
-  { id: "gemini", name: "Gemini CLI", command: "gemini" },
+  { id: "custom", name: "Custom CLI", command: "custom-agent" },
   {
-    resolveExecutableCommand: () => "/usr/local/bin/gemini",
+    resolveExecutableCommand: () => "/usr/local/bin/custom-agent",
     searchDirs: () => [],
     runVersion: () => { throw new Error("spawn ENOENT node"); }
   }

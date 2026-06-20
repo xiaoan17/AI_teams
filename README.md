@@ -55,7 +55,7 @@ AI Teams is meant to run your own agent CLIs locally. The desktop app uses an ap
 npm run dev
 ```
 
-On first launch, the desktop app creates its user-level config at `~/Library/Application Support/ai-teams/agents.json` on macOS. The default desktop config enables Codex, Claude Code, and Kimi; disable or edit any agent you do not use in that user-level config. On later launches, the app also scans your local executable path for known CLI agents such as Codex, Claude Code, Kimi, and Gemini, then appends newly discovered agents that are not already in the app-level config.
+On first launch, the desktop app creates its user-level config at `~/Library/Application Support/ai-teams/agents.json` on macOS. The default desktop config enables Codex, Claude Code, and Kimi; disable or edit any agent you do not use in that user-level config. On later launches, the app also scans your local executable path for known CLI agents such as Codex, Claude Code, and Kimi, then appends newly discovered agents that are not already in the app-level config.
 
 Run this when you want to inspect config paths or troubleshoot missing CLIs:
 
@@ -72,6 +72,38 @@ npm run dev:demo
 ```
 
 This creates `.aiteam-demo/` locally and opens the desktop app with echo-only agents.
+
+## Virtual Employees
+
+AI Teams can run a project crew from reusable role templates:
+
+```bash
+python3 aiteam.py role import ~/Desktop/agent_teams_libs/frontend
+python3 aiteam.py role list
+python3 aiteam.py role hire frontend --enable
+python3 aiteam.py start --role frontend --role prd --role manager
+```
+
+Templates can be prepared in any external source directory, for example `~/Desktop/agent_teams_libs/<id>/`. `role import <path>` validates the template, copies it into the global library at `~/.aiteam/roles/<id>/`, and writes `.imported` provenance. Existing library entries are protected by default; pass `--force` to replace one, or `--id <id>` to import a source under a different library id.
+
+Global templates live under `~/.aiteam/roles/<id>/`. Hiring copies a template into the project at `.aiteam/crew/<id>/` and writes an agent entry with `role`, `skills`, `persona_dir`, `persona_file`, `codex_instructions_file`, plus optional `model` and `collab` metadata. Startup keeps the working directory at the project root. Claude Code receives `--add-dir <crew>`, optional `--model <model>`, and `--append-system-prompt <CLAUDE.md>`. Codex receives `--add-dir <crew>`, optional `-c model=<model>`, and `-c developer_instructions=<RTK.md contents>`, so role context comes from a file without becoming an initial user prompt.
+
+`role.json` can include optional M2 fields:
+
+```json
+{
+  "model": "opus",
+  "collab": {
+    "upstream": ["prd", "manager"],
+    "downstream": ["qa"],
+    "handoff_via": ".aiteam/tasks/"
+  }
+}
+```
+
+The full template contract is documented in `docs/plans/20260620-员工库导入M2-plan/role-schema-v2.md`.
+
+In the desktop app, each team slot has two controls: role and agent type. **Start** only starts the currently configured enabled slots. Panel titles show the assigned role plus runtime, while tmux window names stay stable ASCII ids for runtime matching.
 
 ## Agent Config Ownership
 

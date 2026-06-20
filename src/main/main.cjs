@@ -12,6 +12,12 @@ const {
   reconcileRuntimePanesFromTable: reconcileRuntimePanes
 } = require("./tmux-runtime.cjs");
 const agentDetect = require("./agent-detect.cjs");
+const {
+  agentCwd: buildAgentCwd,
+  agentShellCommand: buildAgentShellCommand,
+  shellQuote
+} = require("./agent-command.cjs");
+const { resolveRuntime, runtimeFamilyList } = require("./role-runtime.cjs");
 const { killProcessTree } = require("./process-tree.cjs");
 const { TMUX_SUBMIT_KEY, tmuxInputActions, writeInputActions } = require("./tmux-input.cjs");
 const { initLogger, scoped } = require("./logger.cjs");
@@ -259,6 +265,24 @@ function writeJson(file, value) {
   fs.writeFileSync(file, JSON.stringify(value, null, 2) + "\n");
 }
 
+function copyDir(source, target) {
+  fs.cpSync(source, target, { recursive: true, force: false, errorOnExist: true });
+}
+
+function ensureCrewCodexInstructions(target, template = {}) {
+  const codexRuntime = resolveRuntime(template, "codex");
+  const instructionsFile = String(codexRuntime.instructionsFile || "AGENTS.md").trim() || "AGENTS.md";
+  const instructionsPath = path.join(target, instructionsFile);
+  if (fs.existsSync(instructionsPath)) {
+    return;
+  }
+  const personaFile = String(resolveRuntime(template).instructionsFile || "CLAUDE.md").trim() || "CLAUDE.md";
+  const personaPath = path.join(target, personaFile);
+  if (fs.existsSync(personaPath)) {
+    fs.copyFileSync(personaPath, instructionsPath);
+  }
+}
+
 function recentWorkspacesPath() {
   return path.join(app.getPath("userData"), "recent-workspaces.json");
 }
@@ -275,6 +299,26 @@ function workspaceConfigPath(root) {
 function appAgentConfigPath() {
   const override = String(process.env.AITEAMS_AGENT_CONFIG_PATH || "").trim();
   return override ? path.resolve(override) : path.join(app.getPath("userData"), "agents.json");
+}
+
+function globalRoleLibraryDir() {
+  const override = String(process.env.AITEAM_ROLES_DIR || "").trim();
+  return override ? path.resolve(override) : path.join(os.homedir(), ".aiteam", "roles");
+}
+
+function workspaceRoleLibraryDir() {
+  return path.join(WORKSPACE_ROOT, ".aiteam", "roles");
+}
+
+// Role libraries, in lookup priority order: workspace overrides global.
+function roleLibraryDirs() {
+  const dirs = [workspaceRoleLibraryDir(), globalRoleLibraryDir()];
+  return [...new Set(dirs)];
+}
+
+// Back-compat: the single global library (used where a concrete dir is needed).
+function roleLibraryDir() {
+  return globalRoleLibraryDir();
 }
 
 function legacyAppAgentConfigPath() {
@@ -685,8 +729,7 @@ function builtinAgentPresets() {
   return [
     { id: "codex", name: "Codex", command: "codex", args: mergeArgs(["--no-alt-screen"], defaultCodexArgs()), cwd: ".", enabled: true, provider: "openai", permission_mode: "configure-before-start", versionArgs: ["--version"], docUrl: "https://github.com/openai/codex" },
     { id: "claude", name: "Claude Code", command: "claude", args: ["--dangerously-skip-permissions"], cwd: ".", enabled: true, provider: "anthropic", permission_mode: "configure-before-start", versionArgs: ["--version"], docUrl: "https://docs.claude.com/claude-code" },
-    { id: "kimi", name: "Kimi", command: "kimi", args: [], cwd: ".", enabled: true, provider: "moonshot", permission_mode: "configure-before-start", versionArgs: ["--version"], docUrl: "https://platform.moonshot.cn" },
-    { id: "gemini", name: "Gemini CLI", command: "gemini", args: [], cwd: ".", enabled: true, provider: "google", permission_mode: "configure-before-start", versionArgs: ["--version"], docUrl: "https://github.com/google-gemini/gemini-cli" }
+    { id: "kimi", name: "Kimi", command: "kimi", args: [], cwd: ".", enabled: true, provider: "moonshot", permission_mode: "configure-before-start", versionArgs: ["--version"], docUrl: "https://platform.moonshot.cn" }
   ];
 }
 
@@ -920,6 +963,605 @@ function removeAgent(agentId) {
   }
   writeJson(configPath, rawConfig);
   return { ok: true, removed: id, remaining: remaining.map((agent) => agent.id) };
+}
+
+function listRoleTemplates() {
+  const config = loadConfig();
+  const hired = new Set(
+    config.agents
+      .filter((agent) => agent.persona_dir)
+      .map((agent) => agent.role_id || agent.id)
+  );
+  const seen = new Set();
+  const roles = [];
+  // Workspace library takes priority over global; first occurrence of an id wins.
+  for (const library of roleLibraryDirs()) {
+    if (!fs.existsSync(library)) {
+      continue;
+    }
+    const source = library === workspaceRoleLibraryDir() ? "workspace" : "global";
+    for (const entry of fs.readdirSync(library, { withFileTypes: true })) {
+      if (!entry.isDirectory()) {
+        continue;
+      }
+      const rolePath = path.join(library, entry.name, "role.json");
+      if (!fs.existsSync(rolePath)) {
+        continue;
+      }
+      const template = readJson(rolePath, null);
+      const role = template?.role && typeof template.role === "object" ? template.role : {};
+      const id = String(template?.id || entry.name);
+      if (seen.has(id)) {
+        continue;
+      }
+      seen.add(id);
+      roles.push({
+        id,
+        title: String(role.title || template?.name || id),
+        emoji: String(role.emoji || ""),
+        summary: String(role.summary || ""),
+        track: String(role.track || ""),
+        skills: Array.isArray(template?.skills) ? template.skills : [],
+        source,
+        hired: hired.has(id)
+      });
+    }
+  }
+  return roles.sort((a, b) => a.id.localeCompare(b.id));
+}
+
+function loadRoleTemplate(roleId) {
+  const id = String(roleId || "").trim();
+  if (!id) {
+    throw new Error("Missing role id.");
+  }
+  for (const library of roleLibraryDirs()) {
+    const source = path.join(library, id);
+    const rolePath = path.join(source, "role.json");
+    if (!fs.existsSync(rolePath)) {
+      continue;
+    }
+    const template = readJson(rolePath, null);
+    if (!template || typeof template !== "object" || Array.isArray(template)) {
+      throw new Error(`Role template role.json must be an object: ${rolePath}`);
+    }
+    const templateId = String(template.id || id);
+    if (templateId !== id) {
+      throw new Error(`Role template id mismatch: expected ${id}, got ${templateId}`);
+    }
+    return { id, source, template };
+  }
+  throw new Error(`Unknown role template: ${id}`);
+}
+
+function hiredAgentFromTemplate(roleId, template, enable = true) {
+  const role = template.role && typeof template.role === "object" ? template.role : {};
+  const rt = resolveRuntime(template);
+  const codexRt = resolveRuntime(template, "codex");
+  const agent = {
+    id: roleId,
+    name: role.title || template.name || roleId,
+    role_id: roleId,
+    // Flatten the default runtime so the launch path keeps working on agents.
+    command: rt.command,
+    args: rt.args,
+    role,
+    skills: Array.isArray(template.skills) ? template.skills : [],
+    persona_dir: `.aiteam/crew/${roleId}`,
+    persona_file: rt.instructionsFile,
+    codex_instructions_file: codexRt.instructionsFile,
+    permission_mode: template.permission_mode || "configure-before-start",
+    enabled: Boolean(enable)
+  };
+  // Carry the new-schema fields forward (harmless if unused by older consumers).
+  if (template.runtimes && typeof template.runtimes === "object") {
+    agent.runtimes = template.runtimes;
+  }
+  if (template.default_runtime) {
+    agent.default_runtime = template.default_runtime;
+  }
+  if (template.autonomy) {
+    agent.autonomy = template.autonomy;
+  }
+  return agent;
+}
+
+function upsertAppAgent(rawConfig, agentUpdate) {
+  const agents = Array.isArray(rawConfig.agents) ? rawConfig.agents : [];
+  const index = agents.findIndex((agent) => agent.id === agentUpdate.id);
+  if (index >= 0) {
+    agents[index] = { ...agents[index], ...agentUpdate };
+  } else {
+    agents.push(agentUpdate);
+  }
+  rawConfig.agents = agents;
+}
+
+function hireRole(roleId, options = {}) {
+  if (loadWorkspaceDemoConfig()) {
+    throw new Error("Hiring roles is disabled in the demo workspace.");
+  }
+  const { id, source, template } = loadRoleTemplate(roleId);
+  const target = path.join(AITEAM_DIR, "crew", id);
+  const force = Boolean(options.force);
+  if (fs.existsSync(target)) {
+    if (!force) {
+      const existing = loadConfig().agents.find((agent) => agent.id === id);
+      if (existing) {
+        return { ok: true, persona_dir: `.aiteam/crew/${id}`, agent: existing, reused: true };
+      }
+    } else {
+      fs.rmSync(target, { recursive: true, force: true });
+    }
+  }
+  if (!fs.existsSync(target)) {
+    copyDir(source, target);
+    ensureCrewCodexInstructions(target, template);
+    writeJson(path.join(target, ".source"), {
+      source_path: path.resolve(source),
+      role_version: template.version || null,
+      hired_at: nowIso()
+    });
+  }
+
+  loadAppAgentConfig();
+  const configPath = appAgentConfigPath();
+  const rawConfig = readJson(configPath, null) || defaultAppAgentConfig();
+  const agentUpdate = hiredAgentFromTemplate(id, template, options.enable !== false);
+  upsertAppAgent(rawConfig, agentUpdate);
+  writeJson(configPath, rawConfig);
+  return { ok: true, persona_dir: `.aiteam/crew/${id}`, agent: agentUpdate, reused: false };
+}
+
+// Mirrors aiteam.py validate_role_dir: a role template directory must carry a
+// role.json object, its persona file, and at least one .claude/skills/<s>/SKILL.md.
+function validateRoleSource(source, expectedId = null) {
+  if (!fs.existsSync(source) || !fs.statSync(source).isDirectory()) {
+    throw new Error(`Role template directory not found: ${source}`);
+  }
+  const rolePath = path.join(source, "role.json");
+  if (!fs.existsSync(rolePath)) {
+    throw new Error(`Role template is missing role.json: ${rolePath}`);
+  }
+  const role = readJson(rolePath, null);
+  if (!role || typeof role !== "object" || Array.isArray(role)) {
+    throw new Error(`Role template role.json must be an object: ${rolePath}`);
+  }
+  const templateId = String(role.id || path.basename(source));
+  if (expectedId !== null && templateId !== expectedId) {
+    throw new Error(`Role template id mismatch: expected ${expectedId}, got ${templateId}`);
+  }
+  const rt = resolveRuntime(role);
+  const personaFile = String(rt.instructionsFile || "CLAUDE.md");
+  if (!fs.existsSync(path.join(source, personaFile))) {
+    throw new Error(`Role template is missing ${personaFile}: ${path.join(source, personaFile)}`);
+  }
+  // Require at least one SKILL.md under the default runtime's skills dir,
+  // falling back to the conventional .claude/skills location.
+  const skillsDirs = [...new Set([rt.skillsDir, ".claude/skills"].filter(Boolean))];
+  let hasSkill = false;
+  for (const rel of skillsDirs) {
+    const skillsRoot = path.join(source, rel);
+    if (fs.existsSync(skillsRoot) && fs.statSync(skillsRoot).isDirectory()) {
+      hasSkill = fs.readdirSync(skillsRoot, { withFileTypes: true }).some(
+        (entry) => entry.isDirectory() && fs.existsSync(path.join(skillsRoot, entry.name, "SKILL.md"))
+      );
+      if (hasSkill) break;
+    }
+  }
+  if (!hasSkill) {
+    throw new Error(`Role template must include at least one ${skillsDirs[0]}/<skill>/SKILL.md: ${source}`);
+  }
+  if (role.runtimes !== undefined && role.runtimes !== null) {
+    if (typeof role.runtimes !== "object" || Array.isArray(role.runtimes)) {
+      throw new Error("Role template runtimes must be an object when present");
+    }
+    for (const [name, rtDef] of Object.entries(role.runtimes)) {
+      if (!rtDef || typeof rtDef !== "object" || Array.isArray(rtDef) || typeof rtDef.command !== "string" || !rtDef.command.trim()) {
+        throw new Error(`Role template runtimes.${name}.command must be a non-empty string`);
+      }
+    }
+  }
+  const model = role.model;
+  if (model !== undefined && model !== null && (typeof model !== "string" || !model.trim())) {
+    throw new Error("Role template model must be a non-empty string when present");
+  }
+  const collab = role.collab;
+  if (collab !== undefined && collab !== null) {
+    if (typeof collab !== "object" || Array.isArray(collab)) {
+      throw new Error("Role template collab must be an object when present");
+    }
+    for (const key of ["upstream", "downstream"]) {
+      if (key in collab && (!Array.isArray(collab[key]) || !collab[key].every((item) => typeof item === "string"))) {
+        throw new Error(`Role template collab.${key} must be an array of strings when present`);
+      }
+    }
+    if ("handoff_via" in collab && typeof collab.handoff_via !== "string") {
+      throw new Error("Role template collab.handoff_via must be a string when present");
+    }
+  }
+  return { role, id: templateId };
+}
+
+// Import an external role template into a library. dest: "workspace" (default,
+// <root>/.aiteam/roles) or "global" (~/.aiteam/roles). JS reimplementation of
+// aiteam.py cmd_role_import so the app needs no python at runtime.
+function importRole(sourcePath, options = {}) {
+  if (loadWorkspaceDemoConfig()) {
+    throw new Error("Importing roles is disabled in the demo workspace.");
+  }
+  const raw = String(sourcePath || "").trim();
+  if (!raw) {
+    throw new Error("Missing role source path.");
+  }
+  const source = path.resolve(raw.startsWith("~") ? path.join(os.homedir(), raw.slice(1)) : raw);
+  const overrideId = String(options.id || "").trim();
+  const { role } = validateRoleSource(source, overrideId ? null : null);
+  const roleId = (overrideId || String(role.id || path.basename(source))).trim();
+  if (!roleId) {
+    throw new Error("Role import id must be non-empty.");
+  }
+
+  const dest = String(options.dest || "workspace").trim() === "global" ? "global" : "workspace";
+  const library = dest === "global" ? globalRoleLibraryDir() : workspaceRoleLibraryDir();
+  ensureDir(library);
+  const target = path.join(library, roleId);
+  if (fs.existsSync(target) && !options.force) {
+    throw new Error(`Role already exists in library: ${roleId}. Use force to replace it.`);
+  }
+
+  const tmp = path.join(library, `.import-tmp-${roleId}-${Date.now()}`);
+  try {
+    fs.cpSync(source, tmp, { recursive: true, force: false, errorOnExist: true });
+    const copiedRole = { ...role, id: roleId };
+    writeJson(path.join(tmp, "role.json"), copiedRole);
+    validateRoleSource(tmp, roleId);
+    writeJson(path.join(tmp, ".imported"), {
+      source_path: source,
+      role_version: copiedRole.version || null,
+      imported_at: nowIso()
+    });
+    if (fs.existsSync(target)) {
+      if (!fs.statSync(target).isDirectory()) {
+        throw new Error(`Cannot replace non-directory role target: ${target}`);
+      }
+      fs.rmSync(target, { recursive: true, force: true });
+    }
+    fs.renameSync(tmp, target);
+  } finally {
+    if (fs.existsSync(tmp)) {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  }
+
+  return { ok: true, id: roleId, dest, library, target };
+}
+
+// List the physical skill directories under a role (each containing a SKILL.md).
+function listRoleSkillDirs(roleSource) {
+  const skillsRoot = path.join(roleSource, ".claude", "skills");
+  if (!fs.existsSync(skillsRoot) || !fs.statSync(skillsRoot).isDirectory()) {
+    return [];
+  }
+  return fs.readdirSync(skillsRoot, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory() && fs.existsSync(path.join(skillsRoot, entry.name, "SKILL.md")))
+    .map((entry) => entry.name)
+    .sort();
+}
+
+// Read a role's full content (role.json fields + persona text + skill dirs),
+// recording which library it came from. Workspace library wins over global.
+function loadRoleDetail(roleId) {
+  const id = String(roleId || "").trim();
+  if (!id) {
+    throw new Error("Missing role id.");
+  }
+  const workspaceLibrary = workspaceRoleLibraryDir();
+  for (const library of roleLibraryDirs()) {
+    const source = path.join(library, id);
+    const rolePath = path.join(source, "role.json");
+    if (!fs.existsSync(rolePath)) {
+      continue;
+    }
+    const template = readJson(rolePath, null);
+    if (!template || typeof template !== "object" || Array.isArray(template)) {
+      throw new Error(`Role template role.json must be an object: ${rolePath}`);
+    }
+    const defaultRt = resolveRuntime(template);
+    const personaFile = String(defaultRt.instructionsFile || "CLAUDE.md");
+    const personaPath = path.join(source, personaFile);
+    let personaContent = "";
+    if (fs.existsSync(personaPath)) {
+      personaContent = fs.readFileSync(personaPath, "utf8");
+    }
+    const origin = library === workspaceLibrary ? "workspace" : "global";
+    // Build an explicit per-runtime view for the editor (claude + codex).
+    const runtimes = {};
+    for (const name of [...new Set([...runtimeFamilyList(template), "claude", "codex"])]) {
+      const rt = resolveRuntime(template, name);
+      runtimes[name] = {
+        command: rt.command,
+        args: rt.args,
+        instructions_file: rt.instructionsFile,
+        skills_dir: rt.skillsDir
+      };
+    }
+    return {
+      id,
+      source,
+      library,
+      origin,
+      editable: origin === "workspace",
+      template,
+      defaultRuntime: defaultRt.runtime,
+      autonomy: String(template.autonomy || "auto"),
+      runtimes,
+      persona: { file: personaFile, content: personaContent },
+      skillDirs: listRoleSkillDirs(source)
+    };
+  }
+  throw new Error(`Unknown role template: ${id}`);
+}
+
+// Normalize a string-array form field (drops blanks).
+function normalizeStringArray(value) {
+  if (Array.isArray(value)) {
+    return value.map((item) => String(item).trim()).filter(Boolean);
+  }
+  return [];
+}
+
+// Save a role's edited fields + persona text back to disk, atomically. Editing a
+// global-library role requires options.promoteToWorkspace: it is copied into the
+// workspace library first so the shared global template is never mutated.
+function saveRole(roleId, payload = {}, options = {}) {
+  if (loadWorkspaceDemoConfig()) {
+    throw new Error("Editing roles is disabled in the demo workspace.");
+  }
+  const detail = loadRoleDetail(roleId);
+  const id = detail.id;
+
+  let targetLibrary = detail.library;
+  let target = detail.source;
+  if (detail.origin === "global") {
+    if (!options.promoteToWorkspace) {
+      throw new Error("Editing a global role requires promoteToWorkspace to copy it into the workspace.");
+    }
+    targetLibrary = workspaceRoleLibraryDir();
+    target = path.join(targetLibrary, id);
+  }
+  ensureDir(targetLibrary);
+
+  // Build the merged role.json from the existing template + edited fields. id is locked.
+  const template = detail.template;
+  const roleMeta = template.role && typeof template.role === "object" ? { ...template.role } : {};
+  const payloadRole = payload.role && typeof payload.role === "object" ? payload.role : {};
+  for (const key of ["title", "emoji", "summary", "track"]) {
+    if (key in payloadRole) {
+      roleMeta[key] = String(payloadRole[key] ?? "");
+    }
+  }
+  const merged = { ...template, id, role: roleMeta };
+
+  // New schema: write runtimes / default_runtime / autonomy; drop old flat keys.
+  if (payload.runtimes && typeof payload.runtimes === "object") {
+    const runtimes = {};
+    for (const [name, rt] of Object.entries(payload.runtimes)) {
+      const command = String(rt?.command || "").trim();
+      if (!command) continue; // skip empty runtime blocks
+      runtimes[name] = {
+        command,
+        args: normalizeStringArray(rt.args),
+        instructions_file: String(rt?.instructions_file || (name === "codex" ? "AGENTS.md" : "CLAUDE.md")).trim(),
+        skills_dir: String(rt?.skills_dir || (name === "codex" ? ".codex/skills" : ".claude/skills")).trim()
+      };
+    }
+    if (Object.keys(runtimes).length) {
+      merged.runtimes = runtimes;
+      const defaultRuntime = String(payload.default_runtime || "").trim();
+      merged.default_runtime = runtimes[defaultRuntime] ? defaultRuntime : Object.keys(runtimes)[0];
+      // Old flat keys are now superseded by runtimes.
+      delete merged.command;
+      delete merged.args;
+      delete merged.codex_instructions_file;
+    }
+  } else if (payload.command !== undefined) {
+    // No runtimes payload: keep flat schema editable (back-compat path).
+    merged.command = String(payload.command || template.command || "claude").trim() || "claude";
+    if (payload.args !== undefined) merged.args = normalizeStringArray(payload.args);
+  }
+  const autonomy = String(payload.autonomy || "").trim();
+  if (autonomy) {
+    merged.autonomy = autonomy;
+  }
+  if (payload.skills !== undefined) {
+    merged.skills = normalizeStringArray(payload.skills);
+  }
+  const model = typeof payload.model === "string" ? payload.model.trim() : "";
+  if (model) {
+    merged.model = model;
+  } else {
+    delete merged.model;
+  }
+  if (payload.collab !== undefined) {
+    const collabInput = payload.collab && typeof payload.collab === "object" ? payload.collab : {};
+    const collab = {};
+    const upstream = normalizeStringArray(collabInput.upstream);
+    const downstream = normalizeStringArray(collabInput.downstream);
+    const handoff = typeof collabInput.handoff_via === "string" ? collabInput.handoff_via.trim() : "";
+    if (upstream.length) collab.upstream = upstream;
+    if (downstream.length) collab.downstream = downstream;
+    if (handoff) collab.handoff_via = handoff;
+    if (Object.keys(collab).length) {
+      merged.collab = collab;
+    } else {
+      delete merged.collab;
+    }
+  }
+
+  const personaFile = String(resolveRuntime(merged).instructionsFile || merged.persona_file || "CLAUDE.md");
+  const personaContent = payload.persona && typeof payload.persona === "object"
+    ? String(payload.persona.content ?? "")
+    : detail.persona.content;
+
+  // Atomic write: stage a full copy in a temp dir, validate, then swap in.
+  const tmp = path.join(targetLibrary, `.edit-tmp-${id}-${Date.now()}`);
+  try {
+    fs.cpSync(detail.source, tmp, { recursive: true });
+    writeJson(path.join(tmp, "role.json"), merged);
+    fs.writeFileSync(path.join(tmp, personaFile), personaContent);
+    validateRoleSource(tmp, id);
+    if (fs.existsSync(target)) {
+      if (!fs.statSync(target).isDirectory()) {
+        throw new Error(`Cannot replace non-directory role target: ${target}`);
+      }
+      fs.rmSync(target, { recursive: true, force: true });
+    }
+    fs.renameSync(tmp, target);
+  } finally {
+    if (fs.existsSync(tmp)) {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  }
+
+  return { ok: true, id, origin: detail.origin === "global" ? "workspace" : detail.origin, source: target };
+}
+
+// Delete a role from its library. Defaults to workspace-only; deleting a global
+// role requires options.allowGlobal. Reports agents still pointing at the role.
+function deleteRole(roleId, options = {}) {
+  if (loadWorkspaceDemoConfig()) {
+    throw new Error("Deleting roles is disabled in the demo workspace.");
+  }
+  const detail = loadRoleDetail(roleId);
+  if (detail.origin === "global" && !options.allowGlobal) {
+    throw new Error("Deleting a global role requires allowGlobal.");
+  }
+  const config = loadConfig();
+  const affectedAgents = (Array.isArray(config.agents) ? config.agents : [])
+    .filter((agent) => (agent.role_id || agent.id) === detail.id)
+    .map((agent) => agent.id);
+  fs.rmSync(detail.source, { recursive: true, force: true });
+  return { ok: true, removed: detail.id, origin: detail.origin, affectedAgents };
+}
+
+function assignAgentRole(agentId, roleId) {
+  if (loadWorkspaceDemoConfig()) {
+    throw new Error("Assigning roles is disabled in the demo workspace.");
+  }
+  const targetAgentId = String(agentId || "").trim();
+  if (!targetAgentId) {
+    throw new Error("Missing agent id.");
+  }
+  loadAppAgentConfig();
+  const configPath = appAgentConfigPath();
+  const rawConfig = readJson(configPath, null) || defaultAppAgentConfig();
+  const agents = Array.isArray(rawConfig.agents) ? rawConfig.agents : [];
+  const index = agents.findIndex((agent) => agent.id === targetAgentId);
+  if (index < 0) {
+    throw new Error(`Agent "${targetAgentId}" was not found.`);
+  }
+
+  const roleValue = String(roleId || "").trim();
+  if (!roleValue) {
+    agents[index] = {
+      ...agents[index],
+      role: undefined,
+      role_id: undefined,
+      skills: undefined,
+      persona_dir: undefined,
+      persona_file: undefined
+    };
+    delete agents[index].role;
+    delete agents[index].role_id;
+    delete agents[index].skills;
+    delete agents[index].persona_dir;
+    delete agents[index].persona_file;
+    rawConfig.agents = agents;
+    writeJson(configPath, rawConfig);
+    return { ok: true, agent: normalizeAgentConfig(rawConfig).agents.find((agent) => agent.id === targetAgentId) };
+  }
+
+  const { id, source, template } = loadRoleTemplate(roleValue);
+  const target = path.join(AITEAM_DIR, "crew", id);
+  if (!fs.existsSync(target)) {
+    copyDir(source, target);
+    ensureCrewCodexInstructions(target, template);
+    writeJson(path.join(target, ".source"), {
+      source_path: path.resolve(source),
+      role_version: template.version || null,
+      hired_at: nowIso()
+    });
+  } else {
+    ensureCrewCodexInstructions(target, template);
+  }
+  const role = template.role && typeof template.role === "object" ? template.role : {};
+  const rt = resolveRuntime(template);
+  const codexRt = resolveRuntime(template, "codex");
+  agents[index] = {
+    ...agents[index],
+    role_id: id,
+    role,
+    skills: Array.isArray(template.skills) ? template.skills : [],
+    persona_dir: `.aiteam/crew/${id}`,
+    command: rt.command,
+    args: rt.args,
+    persona_file: rt.instructionsFile,
+    codex_instructions_file: codexRt.instructionsFile,
+    ...(template.runtimes && typeof template.runtimes === "object" ? { runtimes: template.runtimes } : {}),
+    ...(template.default_runtime ? { default_runtime: template.default_runtime } : {}),
+    ...(template.autonomy ? { autonomy: template.autonomy } : {})
+  };
+  rawConfig.agents = agents;
+  writeJson(configPath, rawConfig);
+  return { ok: true, agent: normalizeAgentConfig(rawConfig).agents.find((agent) => agent.id === targetAgentId) };
+}
+
+function assignAgentType(agentId, agentType) {
+  if (loadWorkspaceDemoConfig()) {
+    throw new Error("Assigning agent types is disabled in the demo workspace.");
+  }
+  const targetAgentId = String(agentId || "").trim();
+  const nextType = String(agentType || "").trim();
+  if (!targetAgentId) {
+    throw new Error("Missing agent id.");
+  }
+  if (!nextType) {
+    throw new Error("Missing agent type.");
+  }
+  const preset = builtinAgentPresets().find((item) => item.id === nextType);
+  if (!preset) {
+    throw new Error(`Unknown agent type: ${nextType}`);
+  }
+
+  loadAppAgentConfig();
+  const configPath = appAgentConfigPath();
+  const rawConfig = readJson(configPath, null) || defaultAppAgentConfig();
+  const agents = Array.isArray(rawConfig.agents) ? rawConfig.agents : [];
+  const index = agents.findIndex((agent) => agent.id === targetAgentId);
+  if (index < 0) {
+    throw new Error(`Agent "${targetAgentId}" was not found.`);
+  }
+
+  const current = agents[index];
+  const roleTitle = String(current?.role?.title || "").trim();
+  const nextAgent = normalizeClaudeAgent(normalizeCodexAgent({
+    ...current,
+    type: preset.id,
+    name: roleTitle || current.name || preset.name || current.id,
+    command: preset.command,
+    args: Array.isArray(preset.args) ? preset.args : [],
+    provider: preset.provider,
+    permission_mode: preset.permission_mode || current.permission_mode || "configure-before-start",
+    cwd: "."
+  }));
+  delete nextAgent.auto_discovered;
+  delete nextAgent.versionArgs;
+  delete nextAgent.docUrl;
+  agents[index] = nextAgent;
+  rawConfig.agents = agents;
+  writeJson(configPath, rawConfig);
+  return { ok: true, agent: normalizeAgentConfig(rawConfig).agents.find((agent) => agent.id === targetAgentId) };
 }
 
 function workspaceName(root) {
@@ -1266,8 +1908,7 @@ function shellCommand(agent) {
 }
 
 function agentCwd(agent) {
-  const cwd = agent.cwd || WORKSPACE_ROOT;
-  return path.isAbsolute(cwd) ? cwd : path.resolve(WORKSPACE_ROOT, cwd);
+  return buildAgentCwd(agent, { workspaceRoot: WORKSPACE_ROOT });
 }
 
 function enabledAgents() {
@@ -1430,17 +2071,12 @@ function getNodePty() {
   }
 }
 
-function shellQuote(value) {
-  const text = String(value ?? "");
-  if (/^[A-Za-z0-9_./:@%+=,-]+$/.test(text)) {
-    return text;
-  }
-  return `'${text.replace(/'/g, "'\\''")}'`;
-}
-
 function agentShellCommand(agent) {
-  const args = Array.isArray(agent.args) ? agent.args : [];
-  return [agentRuntimeCommand(agent), ...args].filter(Boolean).map(shellQuote).join(" ");
+  return buildAgentShellCommand(agent, {
+    workspaceRoot: WORKSPACE_ROOT,
+    resolveCommand: agentRuntimeCommand,
+    logger: log
+  });
 }
 
 function directAgentPublicState(agent) {
@@ -1448,6 +2084,10 @@ function directAgentPublicState(agent) {
   return {
     id: agent.id,
     name: agent.name || agent.id,
+    type: agent.type || null,
+    provider: agent.provider || null,
+    role_id: agent.role_id || null,
+    role: agent.role || null,
     command: shellCommand(agent),
     cwd: agentCwd(agent),
     enabled: agent.enabled !== false,
@@ -1506,10 +2146,9 @@ function directStartAgent(agentId) {
   ensureDir(SESSIONS_DIR);
   ensureDir(STATUS_DIR);
   const sessionFiles = createSessionFiles(agent);
-  const args = Array.isArray(agent.args) ? agent.args : [];
   let ptyProcess;
   try {
-    ptyProcess = getNodePty().spawn(agentRuntimeCommand(agent), args, {
+    ptyProcess = getNodePty().spawn(process.env.SHELL || "/bin/sh", ["-lc", agentShellCommand(agent)], {
       name: "xterm-256color",
       cols: 96,
       rows: 28,
@@ -1971,6 +2610,10 @@ function tmuxAgentPublicState(agent, context = {}) {
   const base = {
     id: agent.id,
     name: agent.name || agent.id,
+    type: agent.type || null,
+    provider: agent.provider || null,
+    role_id: agent.role_id || null,
+    role: agent.role || null,
     command: shellCommand(agent),
     cwd: agentCwd(agent),
     enabled: agent.enabled !== false,
@@ -2747,6 +3390,10 @@ function tmuxPublicState(agentId) {
   return {
     id: agent.id,
     name: agent.name || agent.id,
+    type: agent.type || null,
+    provider: agent.provider || null,
+    role_id: agent.role_id || null,
+    role: agent.role || null,
     command: shellCommand(agent),
     cwd: agentCwd(agent),
     enabled: agent.enabled !== false,
@@ -3265,6 +3912,21 @@ async function chooseWorkspace() {
   return switchWorkspace(result.filePaths[0]);
 }
 
+async function pickDirectory(options = {}) {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    throw new Error("Main window is not available.");
+  }
+  const result = await dialog.showOpenDialog(mainWindow, {
+    title: String(options.title || "Select a folder"),
+    defaultPath: options.defaultPath ? String(options.defaultPath) : WORKSPACE_ROOT,
+    properties: ["openDirectory"]
+  });
+  if (result.canceled || !result.filePaths.length) {
+    return null;
+  }
+  return result.filePaths[0];
+}
+
 function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1440,
@@ -3393,6 +4055,15 @@ ipcHandle("agents:stopAll", () => stopAllAgents());
 ipcHandle("agents:input", (_event, agentId, data) => enqueueAgentInput(agentId, () => writeToAgent(agentId, data)));
 ipcHandle("agents:resize", (_event, agentId, cols, rows) => resizeAgent(agentId, cols, rows));
 ipcHandle("agents:scroll", (_event, agentId, lines) => scrollAgent(agentId, lines));
+ipcHandle("roles:list", () => listRoleTemplates());
+ipcHandle("roles:hire", (_event, roleId) => hireRole(roleId));
+ipcHandle("roles:import", (_event, sourcePath, options = {}) => importRole(sourcePath, options));
+ipcHandle("roles:detail", (_event, roleId) => loadRoleDetail(roleId));
+ipcHandle("roles:save", (_event, roleId, payload, options = {}) => saveRole(roleId, payload, options));
+ipcHandle("roles:delete", (_event, roleId, options = {}) => deleteRole(roleId, options));
+ipcHandle("dialog:pickDirectory", (_event, options = {}) => pickDirectory(options));
+ipcHandle("agents:assignRole", (_event, agentId, roleId) => assignAgentRole(agentId, roleId));
+ipcHandle("agents:assignType", (_event, agentId, agentType) => assignAgentType(agentId, agentType));
 ipcHandle("route:send", (_event, message, explicitTargets = [], options = {}) => routeMessage(message, explicitTargets, options));
 ipcHandle("tasks:list", () => listTasks());
 ipcHandle("documents:list", (_event, folder = "") => listDocuments(folder));
