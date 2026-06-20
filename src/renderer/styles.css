@@ -1348,6 +1348,110 @@ code {
   overflow-y: auto;
 }
 
+/* ── Onboarding / health-check page (WS-B) ─────────────────────────────── */
+.onboarding-modal {
+  width: min(520px, 94vw);
+}
+.onboarding-subtitle {
+  padding: 0 18px 12px;
+  color: var(--muted);
+  font-size: 12.5px;
+  border-bottom: 1px solid var(--border-strong);
+}
+.onboarding-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.onboarding-loading {
+  color: var(--muted);
+  font-size: 13px;
+  padding: 8px 0;
+}
+.onboarding-section-title {
+  color: var(--text-soft);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  opacity: 0.7;
+}
+.onboarding-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  background: var(--control-bg);
+  font-size: 13px;
+}
+.onboarding-row-glyph {
+  flex: 0 0 auto;
+}
+.onboarding-row-name {
+  flex: 0 0 auto;
+  font-weight: 700;
+  color: var(--text-soft);
+  min-width: 110px;
+}
+.onboarding-row-state {
+  flex: 1 1 auto;
+  color: var(--muted);
+}
+.onboarding-row-miss .onboarding-row-state,
+.onboarding-row-warn .onboarding-row-state {
+  color: var(--text-soft);
+}
+.onboarding-install-link {
+  flex: 0 0 auto;
+  border: 1px solid var(--accent);
+  background: color-mix(in srgb, var(--accent) 14%, var(--control-bg));
+  color: var(--text-soft);
+  border-radius: 6px;
+  padding: 3px 9px;
+  font-size: 11.5px;
+  cursor: pointer;
+}
+.onboarding-hint {
+  margin-top: 4px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  font-size: 12.5px;
+}
+.onboarding-hint-ok {
+  background: color-mix(in srgb, #2ecc71 16%, var(--control-bg));
+  color: var(--text-soft);
+}
+.onboarding-hint-warn {
+  background: color-mix(in srgb, #e0a83e 18%, var(--control-bg));
+  color: var(--text-soft);
+}
+.onboarding-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 18px;
+  border-top: 1px solid var(--border-strong);
+}
+.onboarding-dont-show {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 12px;
+  cursor: pointer;
+}
+.onboarding-footer-actions {
+  display: flex;
+  gap: 8px;
+}
+.onboarding-primary {
+  background: color-mix(in srgb, var(--accent) 22%, var(--control-bg));
+  border-color: var(--accent);
+}
+
 .role-modal-error {
   margin: 8px 18px 0;
   padding: 7px 10px;

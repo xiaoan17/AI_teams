@@ -194,6 +194,10 @@ const browserPreviewApi = {
     { type: "claude", name: "Claude Code", command: "claude", provider: "anthropic", installed: true, runnable: true, version: "1.2.3", path: "/usr/local/bin/claude", source: "path", diagnostic: null, docUrl: "https://docs.claude.com/claude-code" },
     { type: "kimi", name: "Kimi", command: "kimi", provider: "moonshot", installed: false, runnable: false, version: null, path: null, source: null, diagnostic: null, docUrl: "https://platform.moonshot.cn" }
   ],
+  checkHealth: async () => ({
+    tmux: { installed: true, runnable: true, version: "3.4", path: "/opt/homebrew/bin/tmux", source: "homebrew", diagnostic: null, docUrl: "https://github.com/tmux/tmux/wiki/Installing" },
+    agents: await browserPreviewApi.detectAgents()
+  }),
   importAgents: async (payload, options = {}) => {
     const PREVIEW_PRESET_COMMANDS = { codex: "codex", claude: "claude", kimi: "kimi" };
     const drafts = Array.isArray(payload)
@@ -977,6 +981,130 @@ function detailToForm(detail) {
     handoffVia: String(collab.handoff_via || ""),
     persona: String(detail?.persona?.content || "")
   };
+}
+
+function OnboardingModal({ api, onClose, onStartTeam }) {
+  // null = first load not yet probed; the effect kicks off the first checkHealth.
+  const [health, setHealth] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [dontShowAgain, setDontShowAgain] = useState(false);
+
+  const runCheck = useCallback(async () => {
+    setError("");
+    setBusy(true);
+    try {
+      const result = await api.checkHealth?.();
+      setHealth(result || { tmux: { installed: false }, agents: [] });
+    } catch (err) {
+      setError(err.message || String(err));
+    } finally {
+      setBusy(false);
+    }
+  }, [api]);
+
+  useEffect(() => { runCheck(); }, [runCheck]);
+
+  const persistDontShow = useCallback(() => {
+    if (dontShowAgain) {
+      try { window.localStorage?.setItem("aiTeams.onboardingDone", "true"); } catch { /* ignore */ }
+    }
+  }, [dontShowAgain]);
+
+  const handleClose = useCallback(() => {
+    persistDontShow();
+    onClose();
+  }, [persistDontShow, onClose]);
+
+  const startTeam = useCallback(() => {
+    persistDontShow();
+    onStartTeam();
+  }, [persistDontShow, onStartTeam]);
+
+  // Esc closes the page (mirrors RoleConfigModal). No dirty guard needed here.
+  useEffect(() => {
+    const onKey = (event) => {
+      if (event.key === "Escape") {
+        event.stopPropagation();
+        handleClose();
+      }
+    };
+    document.addEventListener("keydown", onKey, true);
+    return () => document.removeEventListener("keydown", onKey, true);
+  }, [handleClose]);
+
+  // tmux is the one hard dependency; ready = tmux runnable AND ≥1 runnable agent.
+  const tmux = health?.tmux || { installed: false, runnable: false };
+  const agents = Array.isArray(health?.agents) ? health.agents : [];
+  const hasRunnableAgent = agents.some((a) => a.runnable);
+  const ready = Boolean(tmux.runnable && hasRunnableAgent);
+
+  const statusGlyph = (item) => {
+    if (item.runnable) return { glyph: "✅", cls: "ok", text: `已安装${item.version ? ` (${item.version})` : ""}` };
+    if (item.installed) return { glyph: "⚠️", cls: "warn", text: "已安装但无法运行" };
+    return { glyph: "❌", cls: "miss", text: "未检测到" };
+  };
+
+  const Row = ({ name, item }) => {
+    const s = statusGlyph(item);
+    return (
+      <div className={`onboarding-row onboarding-row-${s.cls}`}>
+        <span className="onboarding-row-glyph">{s.glyph}</span>
+        <span className="onboarding-row-name">{name}</span>
+        <span className="onboarding-row-state">{s.text}</span>
+        {!item.installed && item.docUrl ? (
+          <button
+            type="button"
+            className="onboarding-install-link"
+            onClick={() => (api.openExternal ? api.openExternal(item.docUrl) : window.open?.(item.docUrl, "_blank"))}
+          >安装指引 ↗</button>
+        ) : null}
+      </div>
+    );
+  };
+
+  return (
+    <div className="role-modal-overlay" onMouseDown={(event) => { if (event.target === event.currentTarget) handleClose(); }}>
+      <div className="role-modal onboarding-modal" role="dialog" aria-label="健康检查">
+        <div className="role-modal-header">
+          <strong>👋 欢迎使用 AI Teams</strong>
+          <button type="button" className="role-modal-close" onClick={handleClose} aria-label="关闭">✕</button>
+        </div>
+
+        <div className="onboarding-subtitle">本地多 Agent 终端工作台 —— 先确认环境就绪</div>
+
+        {error ? <div className="role-modal-error" onClick={() => setError("")}>{error}</div> : null}
+
+        <div className="role-modal-body onboarding-body">
+          {health === null ? (
+            <div className="onboarding-loading">正在检测运行环境…</div>
+          ) : (
+            <>
+              <div className="onboarding-section-title">运行环境</div>
+              <Row name="tmux" item={tmux} />
+              {agents.map((a) => (
+                <Row key={a.type} name={a.name || a.type} item={a} />
+              ))}
+              <div className={`onboarding-hint ${ready ? "onboarding-hint-ok" : "onboarding-hint-warn"}`}>
+                {ready ? "环境就绪，可以开始组队。" : "至少需要 tmux + 一个可运行的 Agent CLI。"}
+              </div>
+            </>
+          )}
+        </div>
+
+        <div className="onboarding-footer">
+          <label className="onboarding-dont-show">
+            <input type="checkbox" checked={dontShowAgain} onChange={(e) => setDontShowAgain(e.target.checked)} />
+            下次不再显示
+          </label>
+          <span className="onboarding-footer-actions">
+            <button type="button" className="panel-action" disabled={busy} onClick={runCheck}>{busy ? "检测中…" : "重新检测"}</button>
+            <button type="button" className="panel-action onboarding-primary" onClick={startTeam}>开始组队 →</button>
+          </span>
+        </div>
+      </div>
+    </div>
+  );
 }
 
 function RoleConfigModal({ api, roles, onClose, onRolesChanged }) {
@@ -1954,6 +2082,15 @@ function App() {
   const [agents, setAgents] = useState([]);
   const [roles, setRoles] = useState([]);
   const [roleConfigOpen, setRoleConfigOpen] = useState(false);
+  // Health-check / onboarding page. Auto-opens on first launch (no
+  // `aiTeams.onboardingDone` flag); also reachable from the 团队/帮助 menus.
+  const [onboardingOpen, setOnboardingOpen] = useState(() => {
+    try {
+      return window.localStorage?.getItem("aiTeams.onboardingDone") !== "true";
+    } catch {
+      return false;
+    }
+  });
   const [agentTypes, setAgentTypes] = useState([]);
   const [documents, setDocuments] = useState({ root: "", folder: "", folders: [], tree: null, documents: [] });
   const [activeAgentId, setActiveAgentId] = useState(null);
@@ -2183,9 +2320,7 @@ function App() {
           chooseWorkspaceRef.current?.();
           break;
         case "onboarding:open":
-          // WS-B onboarding/health-check page is not wired yet; open role
-          // config as a stopgap so the menu item is never a dead end.
-          setRoleConfigOpen(true);
+          setOnboardingOpen(true);
           break;
         default:
           break;
@@ -2465,6 +2600,13 @@ function App() {
           roles={roles}
           onClose={() => setRoleConfigOpen(false)}
           onRolesChanged={refreshRoles}
+        />
+      ) : null}
+      {onboardingOpen ? (
+        <OnboardingModal
+          api={api}
+          onClose={() => setOnboardingOpen(false)}
+          onStartTeam={() => { setOnboardingOpen(false); openRoleConfig(); }}
         />
       ) : null}
     </div>

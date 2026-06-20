@@ -118,6 +118,49 @@ function detectAllAgentTypes(presets, deps) {
   return presets.map((preset) => detectAgentType(preset, deps));
 }
 
+// Probe tmux the same way we probe agent CLIs: resolve on PATH, then run
+// `tmux -V` to confirm it runs and to extract the version. tmux is the one
+// hard dependency of the whole app (the runtime orchestrates panes through it),
+// so the health page surfaces it as its own row above the agent list.
+//
+// deps mirror detectAgentType's: resolveExecutableCommand / searchDirs /
+// runVersion are injected so smoke tests never spawn a real tmux.
+function detectTmux(deps) {
+  const { resolveExecutableCommand, searchDirs, runVersion } = deps;
+  const resolved = resolveExecutableCommand("tmux");
+  if (!resolved) {
+    return {
+      installed: false,
+      runnable: false,
+      version: null,
+      path: null,
+      source: null,
+      diagnostic: null,
+      docUrl: "https://github.com/tmux/tmux/wiki/Installing"
+    };
+  }
+  let version = null;
+  let runnable = false;
+  let diagnostic = null;
+  try {
+    const env = buildAugmentedEnv(searchDirs ? searchDirs() : []);
+    const out = runVersion(resolved, ["-V"], env);
+    version = extractVersionString(out);
+    runnable = true;
+  } catch (error) {
+    diagnostic = String(error?.message || error).slice(0, 200);
+  }
+  return {
+    installed: true,
+    runnable,
+    version,
+    path: resolved,
+    source: inferSource(resolved),
+    diagnostic,
+    docUrl: "https://github.com/tmux/tmux/wiki/Installing"
+  };
+}
+
 // Default version runner used by the main process. Split out so smoke tests can inject a
 // fake instead of spawning real processes.
 function defaultRunVersion(resolvedPath, args, env) {
@@ -149,6 +192,7 @@ module.exports = {
   extractVersionString,
   detectAgentType,
   detectAllAgentTypes,
+  detectTmux,
   defaultRunVersion,
   instanceIdFor
 };

@@ -9,6 +9,7 @@ contextBridge.exposeInMainWorld("aiTeams", {
   listAgents: () => ipcRenderer.invoke("agents:list"),
   listAgentPresets: () => ipcRenderer.invoke("agents:presets"),
   detectAgents: () => ipcRenderer.invoke("agents:detect"),
+  checkHealth: () => ipcRenderer.invoke("system:health"),
   importAgents: (payload, options = {}) => ipcRenderer.invoke("agents:import", payload, options),
   removeAgent: (agentId) => ipcRenderer.invoke("agents:remove", agentId),
   getAgentSnapshot: (agentId, options = {}) => ipcRenderer.invoke("agents:snapshot", agentId, options),

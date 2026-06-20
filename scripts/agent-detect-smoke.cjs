@@ -7,6 +7,7 @@ const {
   extractVersionString,
   detectAgentType,
   detectAllAgentTypes,
+  detectTmux,
   defaultRunVersion,
   instanceIdFor
 } = require("../src/main/agent-detect.cjs");
@@ -126,5 +127,39 @@ const e2e = detectAgentType(
 assert.strictEqual(e2e.installed, true);
 assert.strictEqual(e2e.runnable, true, `node --version probe should succeed, got: ${e2e.diagnostic}`);
 assert.ok(/^\d+\.\d+\.\d+/.test(e2e.version), `expected a semver-ish node version, got: ${e2e.version}`);
+
+// --- detectTmux: not installed ----------------------------------------------------------
+const tmuxMissing = detectTmux({
+  resolveExecutableCommand: () => "",
+  searchDirs: () => [],
+  runVersion: () => { throw new Error("should not run"); }
+});
+assert.strictEqual(tmuxMissing.installed, false);
+assert.strictEqual(tmuxMissing.runnable, false);
+assert.strictEqual(tmuxMissing.version, null);
+assert.ok(tmuxMissing.docUrl && tmuxMissing.docUrl.includes("tmux"), "missing tmux still carries an install docUrl");
+
+// --- detectTmux: installed and runnable (parses `tmux -V`) ------------------------------
+let tmuxVersionArgs = null;
+const tmuxRunnable = detectTmux({
+  resolveExecutableCommand: (cmd) => (cmd === "tmux" ? "/opt/homebrew/bin/tmux" : ""),
+  searchDirs: () => ["/opt/homebrew/bin"],
+  runVersion: (_path, args) => { tmuxVersionArgs = args; return "tmux 3.4"; }
+});
+assert.strictEqual(tmuxRunnable.installed, true);
+assert.strictEqual(tmuxRunnable.runnable, true);
+assert.strictEqual(tmuxRunnable.version, "3.4");
+assert.strictEqual(tmuxRunnable.source, "homebrew");
+assert.deepStrictEqual(tmuxVersionArgs, ["-V"], "tmux must be probed with -V");
+
+// --- detectTmux: installed but not runnable ---------------------------------------------
+const tmuxBroken = detectTmux({
+  resolveExecutableCommand: () => "/usr/local/bin/tmux",
+  searchDirs: () => [],
+  runVersion: () => { throw new Error("dyld missing library"); }
+});
+assert.strictEqual(tmuxBroken.installed, true);
+assert.strictEqual(tmuxBroken.runnable, false);
+assert.ok(tmuxBroken.diagnostic && tmuxBroken.diagnostic.includes("dyld"), "broken tmux carries diagnostic");
 
 console.log("agent detect smoke passed");

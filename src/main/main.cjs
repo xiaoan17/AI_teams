@@ -748,6 +748,18 @@ function detectAllAgentTypes() {
   });
 }
 
+// Health snapshot for the onboarding / health-check page (WS-B). tmux is the
+// app's one hard dependency, so it gets its own field above the agent list.
+// The page renders: at least one runnable agent + tmux installed = ready.
+function checkHealth() {
+  const tmux = agentDetect.detectTmux({
+    resolveExecutableCommand,
+    searchDirs: executableSearchDirs,
+    runVersion: agentDetect.defaultRunVersion
+  });
+  return { tmux, agents: detectAllAgentTypes() };
+}
+
 function discoveredBuiltinAgents() {
   return builtinAgentPresets()
     .filter((preset) => commandAvailable(preset.command))
@@ -4066,6 +4078,7 @@ ipcHandle("workspace:choose", () => chooseWorkspace());
 ipcHandle("agents:list", () => listAgentStates());
 ipcHandle("agents:presets", () => builtinAgentPresets());
 ipcHandle("agents:detect", () => detectAllAgentTypes());
+ipcHandle("system:health", () => checkHealth());
 ipcHandle("agents:import", (_event, payload, options = {}) => importAgents(payload, options));
 ipcHandle("agents:remove", (_event, agentId) => removeAgent(agentId));
 ipcHandle("agents:snapshot", (_event, agentId, options = {}) => agentTerminalSnapshot(agentId, options));
