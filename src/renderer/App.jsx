@@ -230,7 +230,8 @@ const browserPreviewApi = {
   },
   onAgentStatus: () => () => {},
   onRouteVerify: () => () => {},
-  onWorkspaceChanged: () => () => {}
+  onWorkspaceChanged: () => () => {},
+  onMenuCommand: () => () => {}
 };
 
 const api = window.aiTeams || browserPreviewApi;
@@ -2130,6 +2131,12 @@ function App() {
     return nextDocuments;
   }, []);
 
+  // Refs let the (mount-once) menu-command subscription reach handlers that are
+  // declared later in render without re-subscribing or capturing stale closures.
+  const startEnabledRef = useRef(null);
+  const stopEnabledRef = useRef(null);
+  const chooseWorkspaceRef = useRef(null);
+
   useEffect(() => {
     let mounted = true;
     loadWorkspaceData().then(() => {
@@ -2151,12 +2158,46 @@ function App() {
     const offDocumentsChanged = api.onDocumentsChanged?.(() => {
       refreshDocuments().catch((error) => setNotice(error.message));
     }) || (() => {});
+    const offMenuCommand = api.onMenuCommand?.(({ id, payload } = {}) => {
+      switch (id) {
+        case "sidebar:toggle":
+          setSidebarCollapsed((current) => !current);
+          break;
+        case "theme:set":
+          if (payload) setThemeId(payload);
+          break;
+        case "effects:toggle":
+          setEffectsEnabled((current) => !current);
+          break;
+        case "agents:startAll":
+          startEnabledRef.current?.();
+          break;
+        case "agents:stopAll":
+          stopEnabledRef.current?.();
+          break;
+        case "role:configure":
+        case "settings:open":
+          setRoleConfigOpen(true);
+          break;
+        case "workspace:choose":
+          chooseWorkspaceRef.current?.();
+          break;
+        case "onboarding:open":
+          // WS-B onboarding/health-check page is not wired yet; open role
+          // config as a stopgap so the menu item is never a dead end.
+          setRoleConfigOpen(true);
+          break;
+        default:
+          break;
+      }
+    }) || (() => {});
     return () => {
       mounted = false;
       offStatus();
       offRouteVerify();
       offWorkspace();
       offDocumentsChanged();
+      offMenuCommand();
     };
   }, [loadWorkspaceData, refreshDocuments]);
 
@@ -2304,6 +2345,11 @@ function App() {
       setNotice(error.message);
     }
   };
+
+  // Keep menu-command refs pointing at the latest handler closures every render.
+  startEnabledRef.current = startEnabled;
+  stopEnabledRef.current = stopEnabled;
+  chooseWorkspaceRef.current = chooseWorkspace;
 
   const insertDocumentPath = useCallback((relativePath) => {
     composerRef.current?.insertText(relativePath);

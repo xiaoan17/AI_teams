@@ -64,6 +64,12 @@ contextBridge.exposeInMainWorld("aiTeams", {
     listeners.add(["documents:changed", wrapped]);
     return () => ipcRenderer.removeListener("documents:changed", wrapped);
   },
+  onMenuCommand: (callback) => {
+    const wrapped = (_event, payload) => callback(payload);
+    ipcRenderer.on("menu:command", wrapped);
+    listeners.add(["menu:command", wrapped]);
+    return () => ipcRenderer.removeListener("menu:command", wrapped);
+  },
   removeAllListeners: () => {
     for (const [channel, wrapped] of listeners) {
       ipcRenderer.removeListener(channel, wrapped);

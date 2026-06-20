@@ -1,4 +1,4 @@
-const { app, BrowserWindow, dialog, ipcMain, shell } = require("electron");
+const { app, BrowserWindow, dialog, ipcMain, shell, Menu } = require("electron");
 const { execFileSync } = require("child_process");
 const fs = require("fs");
 const os = require("os");
@@ -20,7 +20,8 @@ const {
 const { resolveRuntime, runtimeFamilyList } = require("./role-runtime.cjs");
 const { killProcessTree } = require("./process-tree.cjs");
 const { TMUX_SUBMIT_KEY, tmuxInputActions, writeInputActions } = require("./tmux-input.cjs");
-const { initLogger, scoped } = require("./logger.cjs");
+const { initLogger, scoped, getLogsDir } = require("./logger.cjs");
+const { installMenu } = require("./app-menu.cjs");
 
 // GUI apps launched from Finder/Dock do NOT inherit the login shell's
 // environment, so LANG/LC_* are typically empty. tmux uses those locale vars to
@@ -3975,7 +3976,26 @@ app.whenReady().then(() => {
   startDocumentsWatcher();
   rememberWorkspace(WORKSPACE_ROOT);
   createWindow();
+  installApplicationMenu();
 });
+
+// Build + install the native menu. `sendCommand` forwards menu clicks to the
+// renderer over `menu:command`; the renderer routes them through its existing
+// handlers (see src/renderer/App.jsx). Reload/devtools are gated to dev only —
+// in a packaged build a stray Cmd+R would disrupt live terminal sessions.
+function installApplicationMenu() {
+  const isDev = !(app.isPackaged || isRunningFromAppBundle() || process.env.NODE_ENV === "production");
+  installMenu({
+    getWindow: () => mainWindow,
+    getLogsDir,
+    isDev,
+    sendCommand: (id, payload) => {
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send("menu:command", { id, payload });
+      }
+    }
+  });
+}
 
 app.on("window-all-closed", () => {
   if (process.platform !== "darwin") {
