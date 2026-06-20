@@ -73,6 +73,36 @@ npm run dev:demo
 
 This creates `.aiteam-demo/` locally and opens the desktop app with echo-only agents.
 
+## Desktop App: Menus, Shortcuts & First-Run Check
+
+The macOS app ships a native menu bar. Key items and accelerators:
+
+| Menu | Item | Shortcut |
+|------|------|----------|
+| AI Teams | 偏好设置… (Settings) | `⌘,` |
+| 文件 File | 打开项目… (Open project) | `⌘O` |
+| 视图 View | 切换侧边栏 (Toggle sidebar) | `⌘B` |
+| 视图 View | 主题 / 环境光效 (Theme / Ambient effects) | — |
+| 团队 Agent | 全部启动 (Start all) | `⌘↩` |
+| 团队 Agent | 全部停止 (Stop all) | `⌘.` |
+| 团队 Agent | 配置 Agent… / 打开日志目录 / 健康检查… | — |
+| 帮助 Help | 使用文档 / 报告问题 / 健康检查… | — |
+
+Notes:
+- `⌘.` (Stop all) is the menu accelerator; it does **not** steal the in-terminal
+  interrupt — agents/CLIs are interrupted with `Ctrl+C` inside the pane.
+- 重新加载 (Reload) / 开发者工具 (DevTools) appear only in dev builds, so a stray
+  `⌘R` cannot disrupt live terminal sessions in the packaged app.
+- **打开日志目录 (Open logs dir)** opens the app log folder in Finder.
+
+**First-run health check** — on first launch (and from 团队/帮助 ▸ 健康检查…) a
+page checks that `tmux` plus at least one agent CLI is installed and runnable,
+with per-tool version and install links. Tick "下次不再显示" to skip it next time.
+
+**Language** — Settings (⚙) ▸ 语言/Language toggles the whole UI between 中文 and
+English; the choice persists across launches.
+
+
 ## Virtual Employees
 
 AI Teams can run a project crew from reusable role templates:
