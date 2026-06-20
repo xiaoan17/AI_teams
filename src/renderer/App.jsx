@@ -16,6 +16,7 @@ import "./styles.css";
 import { DEFAULT_THEME_ID, themePresets, themeToCssVars } from "./themes.js";
 import { installRendererLogging } from "./renderer-log.mjs";
 import { LocaleProvider, useT, useLocale } from "./i18n.js";
+import { toastTtl, toastGlyph } from "./toast-util.js";
 
 const aiTeamsAppIcon = `${import.meta.env.BASE_URL}app-icon.png`;
 
@@ -1754,7 +1755,7 @@ function Sidebar({
                         onStop(agent.id);
                       }}
                     >
-                      x
+                      ✕
                     </button>
                     <button
                       className="window-control window-control-minimize"
@@ -1769,7 +1770,7 @@ function Sidebar({
                         }
                       }}
                     >
-                      {minimized ? "+" : "-"}
+                      {minimized ? "+" : "–"}
                     </button>
                   </>
                 )}
@@ -1973,7 +1974,7 @@ const Composer = forwardRef(function Composer({ agents, documents, activeAgentId
                 aria-label={t("composer.removeDoc")}
                 onClick={() => onTaskPathChange("")}
               >
-                x
+                ✕
               </button>
             </span>
           ) : null}
@@ -2102,6 +2103,7 @@ const Composer = forwardRef(function Composer({ agents, documents, activeAgentId
 });
 
 function App() {
+  const t = useT();
   const [workspace, setWorkspace] = useState(null);
   const [agents, setAgents] = useState([]);
   const [roles, setRoles] = useState([]);
@@ -2118,7 +2120,43 @@ function App() {
   const [agentTypes, setAgentTypes] = useState([]);
   const [documents, setDocuments] = useState({ root: "", folder: "", folders: [], tree: null, documents: [] });
   const [activeAgentId, setActiveAgentId] = useState(null);
-  const [notice, setNotice] = useState("");
+  // WS-D D1: leveled toast queue replacing the single top notice bar.
+  // error = persistent (manual dismiss); success = 3s; info = 5s. Stacked
+  // bottom-right. setNotice(...) is kept as a compat shim: a non-empty string
+  // becomes an error toast (covers all existing `setNotice(error.message)`
+  // sites), an empty string is a no-op.
+  const [toasts, setToasts] = useState([]);
+  const toastSeqRef = useRef(0);
+  const toastTimersRef = useRef(new Map());
+
+  const dismissToast = useCallback((id) => {
+    setToasts((current) => current.filter((toastItem) => toastItem.id !== id));
+    const timer = toastTimersRef.current.get(id);
+    if (timer) {
+      clearTimeout(timer);
+      toastTimersRef.current.delete(id);
+    }
+  }, []);
+
+  const pushToast = useCallback(({ level = "info", text }) => {
+    const message = String(text ?? "").trim();
+    if (!message) return null;
+    const id = `toast-${toastSeqRef.current++}`;
+    setToasts((current) => [...current, { id, level, text: message }]);
+    const ttl = toastTtl(level);
+    if (ttl > 0) {
+      const timer = setTimeout(() => dismissToast(id), ttl);
+      toastTimersRef.current.set(id, timer);
+    }
+    return id;
+  }, [dismissToast]);
+
+  // Compat shim for the many existing call sites: setNotice(msg) raises an
+  // error toast; setNotice("") clears nothing (errors are dismissed explicitly
+  // or by the stale-route effect below).
+  const setNotice = useCallback((msg) => {
+    pushToast({ level: "error", text: msg });
+  }, [pushToast]);
   const composerRef = useRef(null);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
     try {
@@ -2373,12 +2411,17 @@ function App() {
   }, [agents, minimizedAgents]);
 
   useEffect(() => {
-    if (!staleRouteNotice(notice)) return;
     const enabled = agents.filter((agent) => agent.enabled);
-    if (enabled.length && enabled.every((agent) => !stoppedOrExited(agent))) {
-      setNotice("");
-    }
-  }, [agents, notice]);
+    if (!(enabled.length && enabled.every((agent) => !stoppedOrExited(agent)))) return;
+    // Once every enabled agent is running again, a route-failure toast is stale.
+    setToasts((current) => current.filter((toastItem) => !staleRouteNotice(toastItem.text)));
+  }, [agents]);
+
+  // Clear any pending toast timers on unmount.
+  useEffect(() => () => {
+    for (const timer of toastTimersRef.current.values()) clearTimeout(timer);
+    toastTimersRef.current.clear();
+  }, []);
 
   const startAgent = async (agentId) => {
     try {
@@ -2574,9 +2617,7 @@ function App() {
         onOpen={(targetPath) => api.openPath(targetPath)}
         onInsertDocumentPath={insertDocumentPath}
       />
-      <main className={`workspace ${notice ? "workspace-has-notice" : ""}`}>
-        {notice ? <div className="notice" onClick={() => setNotice("")}>{notice}</div> : null}
-
+      <main className="workspace">
         <section className={terminalLayoutClass}>
           {runningAgents.map((agent) => (
             <AgentTerminal
@@ -2599,11 +2640,23 @@ function App() {
           ))}
           {!visibleTerminalAgents.length ? (
             <div className="empty-state">
-              {minimizedCount
-                ? `${minimizedCount} agent panel${minimizedCount > 1 ? "s are" : " is"} minimized. Click an agent in the sidebar to restore it.`
-                : enabledAgents.length
-                  ? "Start an agent from the sidebar to open its terminal."
-                  : "No team slots are configured in AI Teams."}
+              {minimizedCount ? (
+                <div className="empty-state-text">{t("empty.minimized", { n: minimizedCount })}</div>
+              ) : enabledAgents.length ? (
+                <>
+                  <div className="empty-state-text">{t("empty.noRunning")}</div>
+                  <button type="button" className="empty-state-cta" onClick={startEnabled}>
+                    {t("empty.startAll")}
+                  </button>
+                </>
+              ) : (
+                <>
+                  <div className="empty-state-text">{t("empty.noAgents")}</div>
+                  <button type="button" className="empty-state-cta" onClick={openRoleConfig}>
+                    {t("empty.configureTeam")}
+                  </button>
+                </>
+              )}
             </div>
           ) : null}
         </section>
@@ -2632,6 +2685,27 @@ function App() {
           onClose={() => setOnboardingOpen(false)}
           onStartTeam={() => { setOnboardingOpen(false); openRoleConfig(); }}
         />
+      ) : null}
+      {toasts.length ? (
+        <div className="toast-stack" role="region" aria-live="polite">
+          {toasts.map((toastItem) => (
+            <div key={toastItem.id} className={`toast toast-${toastItem.level}`}>
+              <span className="toast-glyph" aria-hidden="true">
+                {toastGlyph(toastItem.level)}
+              </span>
+              <span className="toast-text">{toastItem.text}</span>
+              <button
+                type="button"
+                className="toast-close"
+                title={t("toast.dismiss")}
+                aria-label={t("toast.dismiss")}
+                onClick={() => dismissToast(toastItem.id)}
+              >
+                ✕
+              </button>
+            </div>
+          ))}
+        </div>
       ) : null}
     </div>
   );

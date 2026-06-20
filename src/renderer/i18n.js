@@ -79,7 +79,17 @@ const zh = {
   "time.now": "刚刚",
   "time.minutesAgo": "{n} 分钟前",
   "time.hoursAgo": "{n} 小时前",
-  "time.daysAgo": "{n} 天前"
+  "time.daysAgo": "{n} 天前",
+
+  // empty states (workspace)
+  "empty.minimized": "{n} 个面板已最小化，点击侧边栏的员工可还原。",
+  "empty.noRunning": "从侧边栏启动一个员工，打开它的终端。",
+  "empty.noAgents": "还没有配置团队成员。",
+  "empty.configureTeam": "配置团队",
+  "empty.startAll": "全部启动",
+
+  // toast
+  "toast.dismiss": "关闭"
 };
 
 const en = {
@@ -141,7 +151,17 @@ const en = {
   "time.now": "now",
   "time.minutesAgo": "{n}m ago",
   "time.hoursAgo": "{n}h ago",
-  "time.daysAgo": "{n}d ago"
+  "time.daysAgo": "{n}d ago",
+
+  // empty states (workspace)
+  "empty.minimized": "{n} agent panel(s) minimized. Click an agent in the sidebar to restore it.",
+  "empty.noRunning": "Start an agent from the sidebar to open its terminal.",
+  "empty.noAgents": "No team members are configured yet.",
+  "empty.configureTeam": "Configure team",
+  "empty.startAll": "Start all",
+
+  // toast
+  "toast.dismiss": "Dismiss"
 };
 
 export const DICTIONARIES = { zh, en };
