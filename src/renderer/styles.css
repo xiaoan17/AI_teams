@@ -484,6 +484,43 @@ button {
   color: var(--text);
 }
 
+/* WS-C C2: Role is primary, runtime is secondary.
+   The role select reads as the main control; the runtime drops to a small
+   caption + compact select underneath, de-emphasized until hover/focus. */
+.agent-main-stacked {
+  gap: 3px;
+}
+.agent-main-stacked .agent-role-select {
+  height: 26px;
+  font-size: 12px;
+  color: var(--text);
+  font-weight: 600;
+}
+.agent-runtime-subline {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  opacity: 0.62;
+  transition: opacity 120ms ease;
+}
+.agent-row:hover .agent-runtime-subline,
+.agent-row:focus-within .agent-runtime-subline {
+  opacity: 1;
+}
+.agent-runtime-caption {
+  flex: 0 0 auto;
+  font-size: 10px;
+  letter-spacing: 0.02em;
+  color: var(--muted);
+  text-transform: uppercase;
+}
+.agent-runtime-subline .agent-type-select {
+  height: 20px;
+  font-size: 10.5px;
+  flex: 1 1 auto;
+}
+
 .icon-button {
   display: grid;
   place-items: center;

@@ -15,6 +15,7 @@ import {
 import "./styles.css";
 import { DEFAULT_THEME_ID, themePresets, themeToCssVars } from "./themes.js";
 import { installRendererLogging } from "./renderer-log.mjs";
+import { LocaleProvider, useT, useLocale } from "./i18n.js";
 
 const aiTeamsAppIcon = `${import.meta.env.BASE_URL}app-icon.png`;
 
@@ -250,15 +251,17 @@ function snapshotToTerminalData(data) {
   return `\x1bc${String(data || "").replace(/\r?\n/g, "\r\n")}`;
 }
 
-const statusLabels = {
-  stopped: "Stopped",
-  starting: "Running",
-  running_or_idle: "Running",
-  waiting_input: "Needs Input",
-  exited: "Stopped",
-  error: "Error",
-  missing_runtime: "Error",
-  pane_missing: "Error"
+// Maps an agent status to its i18n key (several statuses share a label).
+// Translate at the call site via t(statusLabelKey(status)).
+const STATUS_LABEL_KEYS = {
+  stopped: "status.stopped",
+  starting: "status.running",
+  running_or_idle: "status.running",
+  waiting_input: "status.waiting_input",
+  exited: "status.stopped",
+  error: "status.error",
+  missing_runtime: "status.error",
+  pane_missing: "status.error"
 };
 
 function statusClass(status) {
@@ -555,6 +558,7 @@ function DocumentTreeNode({
 }
 
 function AgentTerminal({ agent, active, hidden, terminalTheme, onFocus, onNotice }) {
+  const t = useT();
   const containerRef = useRef(null);
   const termRef = useRef(null);
   const fitRef = useRef(null);
@@ -912,7 +916,7 @@ function AgentTerminal({ agent, active, hidden, terminalTheme, onFocus, onNotice
         </div>
         <div className={`status-pill ${statusClass(agent.status)}`} title={statusTitle}>
           <span className="status-dot" />
-          {statusLabels[agent.status] || agent.status}
+          {STATUS_LABEL_KEYS[agent.status] ? t(STATUS_LABEL_KEYS[agent.status]) : agent.status}
         </div>
       </header>
       <div className="terminal-surface" ref={containerRef} />
@@ -1464,6 +1468,8 @@ function Sidebar({
   onOpen,
   onInsertDocumentPath
 }) {
+  const t = useT();
+  const { locale, setLocale } = useLocale();
   const documentList = documents?.documents || [];
   const documentTree = documents?.tree || null;
   const recentWorkspaces = workspace?.recentWorkspaces || [];
@@ -1544,14 +1550,14 @@ function Sidebar({
             <details className="sidebar-settings">
               <summary
                 className="sidebar-icon-button"
-                title="Settings"
-                aria-label="Settings"
+                title={t("sidebar.settings")}
+                aria-label={t("sidebar.settings")}
               >
                 ⚙
               </summary>
               <div className="settings-menu">
                 <label className="workspace-picker theme-picker">
-                  <span>Theme</span>
+                  <span>{t("sidebar.theme")}</span>
                   <select value={themeId} onChange={(event) => onThemeChange(event.target.value)}>
                     {Object.values(themes).map((themeOption) => (
                       <option key={themeOption.id} value={themeOption.id}>
@@ -1560,21 +1566,28 @@ function Sidebar({
                     ))}
                   </select>
                 </label>
-                <label className="ambient-toggle" title="Ambient effects">
+                <label className="workspace-picker theme-picker">
+                  <span>{t("sidebar.language")}</span>
+                  <select value={locale} onChange={(event) => setLocale(event.target.value)}>
+                    <option value="zh">中文</option>
+                    <option value="en">English</option>
+                  </select>
+                </label>
+                <label className="ambient-toggle" title={t("sidebar.effects")}>
                   <input
                     type="checkbox"
                     checked={effectsEnabled}
                     onChange={(event) => onToggleEffects(event.target.checked)}
                   />
-                  <span>Ambient effects</span>
+                  <span>{t("sidebar.effects")}</span>
                 </label>
               </div>
             </details>
             <button
               className="sidebar-icon-button sidebar-toggle"
               type="button"
-              title={collapsed ? "Expand sidebar" : "Collapse sidebar"}
-              aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+              title={collapsed ? t("sidebar.expandSidebar") : t("sidebar.collapseSidebar")}
+              aria-label={collapsed ? t("sidebar.expandSidebar") : t("sidebar.collapseSidebar")}
               onClick={onToggleCollapsed}
             >
               {collapsed ? ">" : "<"}
@@ -1582,24 +1595,24 @@ function Sidebar({
           </div>
         </div>
         <div className="workspace-control">
-          <div className="workspace-label">Project</div>
+          <div className="workspace-label">{t("sidebar.project")}</div>
           <button
             className="workspace-current"
             type="button"
-            title={workspace?.name || "Choose project"}
+            title={workspace?.name || t("sidebar.chooseProject")}
             onClick={onChooseWorkspace}
           >
-            <span className="workspace-current-name">{workspace?.name || "Choose project"}</span>
+            <span className="workspace-current-name">{workspace?.name || t("sidebar.chooseProject")}</span>
           </button>
           <label className="workspace-picker">
-            <span>Recent</span>
+            <span>{t("sidebar.recent")}</span>
             <select
               value=""
-              title={recentWorkspaceOptions.length ? "Switch recent project" : "No recent projects"}
+              title={recentWorkspaceOptions.length ? t("sidebar.switchRecent") : t("sidebar.noRecent")}
               disabled={!recentWorkspaceOptions.length}
               onChange={(event) => onSelectWorkspace(event.target.value)}
             >
-              <option value="">{recentWorkspaceOptions.length ? "Switch recent..." : "No recent projects"}</option>
+              <option value="">{recentWorkspaceOptions.length ? t("sidebar.switchRecent") : t("sidebar.noRecent")}</option>
               {recentWorkspaceOptions.map((item) => (
                 <option key={item.root} value={item.root}>
                   {item.name}
@@ -1618,8 +1631,8 @@ function Sidebar({
           <button
             className="sidebar-icon-button sidebar-toggle"
             type="button"
-            title={collapsed ? "Expand sidebar" : "Collapse sidebar"}
-            aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+            title={collapsed ? t("sidebar.expandSidebar") : t("sidebar.collapseSidebar")}
+            aria-label={collapsed ? t("sidebar.expandSidebar") : t("sidebar.collapseSidebar")}
             onClick={onToggleCollapsed}
           >
             {collapsed ? ">" : "<"}
@@ -1628,21 +1641,21 @@ function Sidebar({
       </div>
 
       <div className="sidebar-bulk-actions" aria-label="Team batch controls">
-        <button type="button" onClick={onStartEnabled}>Start</button>
-        <button type="button" onClick={onStopEnabled}>Stop</button>
+        <button type="button" onClick={onStartEnabled}>{t("sidebar.start")}</button>
+        <button type="button" onClick={onStopEnabled}>{t("sidebar.stop")}</button>
       </div>
 
       <section className="panel">
         <div className="panel-heading">
-          <div className="panel-title">Team</div>
+          <div className="panel-title">{t("sidebar.team")}</div>
           {onImportRole ? (
             <button
               type="button"
               className="panel-action"
-              title="导入外部 Agent、查看与编辑 Role 配置"
+              title={t("sidebar.configAgentTooltip")}
               onClick={onImportRole}
             >
-              配置 Agent
+              {t("sidebar.configAgent")}
             </button>
           ) : null}
         </div>
@@ -1674,11 +1687,11 @@ function Sidebar({
               title={displayName}
             >
               <span className={`agent-dot ${statusClass(agent.status)}`} />
-              <span className="agent-main">
+              <span className="agent-main agent-main-stacked">
                 <select
                   className="agent-role-select"
                   value={assignedRoleId}
-                  title="Role"
+                  title={t("sidebar.role")}
                   onClick={(event) => event.stopPropagation()}
                   onKeyDown={(event) => event.stopPropagation()}
                   onChange={(event) => {
@@ -1686,39 +1699,42 @@ function Sidebar({
                     onAssignRole(agent.id, event.target.value);
                   }}
                 >
-                  <option value="">Role</option>
+                  <option value="">{t("sidebar.role")}</option>
                   {roles.map((role) => (
                     <option key={role.id} value={role.id}>
                       {[role.emoji, role.title || role.id].filter(Boolean).join(" ")}
                     </option>
                   ))}
                 </select>
-                <select
-                  className="agent-type-select"
-                  value={assignedAgentType}
-                  title="Agent"
-                  onClick={(event) => event.stopPropagation()}
-                  onKeyDown={(event) => event.stopPropagation()}
-                  onChange={(event) => {
-                    event.stopPropagation();
-                    onAssignType(agent.id, event.target.value);
-                  }}
-                >
-                  {agentTypes.map((type) => (
-                    <option key={type.id} value={type.id}>
-                      {type.name || type.id}
-                    </option>
-                  ))}
-                </select>
+                <label className="agent-runtime-subline" title={t("sidebar.agentType")}>
+                  <span className="agent-runtime-caption">{t("sidebar.agentType")}</span>
+                  <select
+                    className="agent-type-select"
+                    value={assignedAgentType}
+                    title={t("sidebar.agentType")}
+                    onClick={(event) => event.stopPropagation()}
+                    onKeyDown={(event) => event.stopPropagation()}
+                    onChange={(event) => {
+                      event.stopPropagation();
+                      onAssignType(agent.id, event.target.value);
+                    }}
+                  >
+                    {agentTypes.map((type) => (
+                      <option key={type.id} value={type.id}>
+                        {type.name || type.id}
+                      </option>
+                    ))}
+                  </select>
+                </label>
               </span>
               <span className="agent-actions">
                 {!agent.enabled ? (
-                  <span className="disabled-label">Off</span>
+                  <span className="disabled-label">{t("sidebar.off")}</span>
                 ) : stoppedOrExited(agent) ? (
                   <button
                     className="icon-button"
                     type="button"
-                    title="Start agent"
+                    title={t("sidebar.startAgent")}
                     onClick={(event) => {
                       event.stopPropagation();
                       onStart(agent.id);
@@ -1731,8 +1747,8 @@ function Sidebar({
                     <button
                       className="window-control window-control-close"
                       type="button"
-                      title="Stop agent"
-                      aria-label={`Stop ${agent.name}`}
+                      title={t("sidebar.stopAgent")}
+                      aria-label={`${t("sidebar.stopAgent")} ${agent.name}`}
                       onClick={(event) => {
                         event.stopPropagation();
                         onStop(agent.id);
@@ -1743,8 +1759,8 @@ function Sidebar({
                     <button
                       className="window-control window-control-minimize"
                       type="button"
-                      title={minimized ? "Restore panel" : "Minimize panel"}
-                      aria-label={minimized ? `Restore ${agent.name} panel` : `Minimize ${agent.name} panel`}
+                      title={minimized ? t("sidebar.restorePanel") : t("sidebar.minimizePanel")}
+                      aria-label={minimized ? `${t("sidebar.restorePanel")} ${agent.name}` : `${t("sidebar.minimizePanel")} ${agent.name}`}
                       onClick={(event) => {
                         event.stopPropagation();
                         onToggleMinimize(agent.id);
@@ -1766,15 +1782,15 @@ function Sidebar({
 
       <section className="panel">
         <div className="panel-heading">
-          <div className="panel-title">Docs</div>
+          <div className="panel-title">{t("sidebar.docs")}</div>
           <span>{hasDocumentFilter ? `${filteredDocumentCount}/${documentList.length}` : documentList.length}</span>
         </div>
         <label className="document-search">
-          <span>Search docs</span>
+          <span>{t("sidebar.searchDocs")}</span>
           <input
             type="search"
             value={documentSearch}
-            placeholder="Search docs"
+            placeholder={t("sidebar.searchDocs")}
             onChange={(event) => setDocumentSearch(event.target.value)}
           />
           <select
@@ -1801,7 +1817,7 @@ function Sidebar({
               onToggleDocumentPinned={onToggleDocumentPinned}
             />
           ) : (
-            <div className="document-empty">{hasDocumentFilter ? "No matching docs" : "No docs"}</div>
+            <div className="document-empty">{hasDocumentFilter ? t("sidebar.noMatchingDocs") : t("sidebar.noDocs")}</div>
           )}
         </div>
       </section>
@@ -1810,6 +1826,7 @@ function Sidebar({
 }
 
 const Composer = forwardRef(function Composer({ agents, documents, activeAgentId, taskPath, onTaskPathChange, onRoute }, ref) {
+  const t = useT();
   const [value, setValue] = useState("");
   const [sending, setSending] = useState(false);
   const [docMenuOpen, setDocMenuOpen] = useState(false);
@@ -1821,6 +1838,13 @@ const Composer = forwardRef(function Composer({ agents, documents, activeAgentId
   const composingRef = useRef(false);
   const documentList = documents?.documents || [];
   const enabledAgents = useMemo(() => agents.filter((agent) => agent.enabled), [agents]);
+  // C3: the composer placeholder mentions the active member by their role
+  // display name (e.g. "设计师") rather than the internal id (e.g. "codex").
+  const activeAgentDisplayName = useMemo(() => {
+    if (!activeAgentId) return "";
+    const agent = agents.find((a) => a.id === activeAgentId);
+    return agent ? agentDisplayName(agent) : activeAgentId;
+  }, [agents, activeAgentId]);
   const attachedDocument = useMemo(
     () => documentList.find((document) => document.path === taskPath) || null,
     [documentList, taskPath]
@@ -1937,16 +1961,16 @@ const Composer = forwardRef(function Composer({ agents, documents, activeAgentId
     <footer className={["composer", hasMention ? "composer-has-targets" : ""].filter(Boolean).join(" ")}>
       <div className="composer-topline">
         <div className="composer-targets">
-          {hasMention ? `Targets: ${mentionPreview.length ? mentionPreview.map((item) => `@${item}`).join(" ") : "none"}` : ""}
+          {hasMention ? `${t("composer.targets")}${mentionPreview.length ? mentionPreview.map((item) => `@${item}`).join(" ") : t("composer.targetsNone")}` : ""}
         </div>
         <div className="composer-doc-tools" ref={docPickerRef}>
           {attachedDocument ? (
-            <span className="attachment-chip" title={`Attached: ${attachedDocument.relativePath}`}>
+            <span className="attachment-chip" title={`${attachedDocument.relativePath}`}>
               <span className="attachment-chip-label">{attachedDocument.name}</span>
               <button
                 type="button"
-                title="Remove attached doc"
-                aria-label="Remove attached doc"
+                title={t("composer.removeDoc")}
+                aria-label={t("composer.removeDoc")}
                 onClick={() => onTaskPathChange("")}
               >
                 x
@@ -1956,8 +1980,8 @@ const Composer = forwardRef(function Composer({ agents, documents, activeAgentId
           <button
             className="attach-doc-button"
             type="button"
-            title={attachedDocument ? "Change attached doc" : "Attach doc"}
-            aria-label={attachedDocument ? "Change attached doc" : "Attach doc"}
+            title={attachedDocument ? t("composer.changeDoc") : t("composer.attachDoc")}
+            aria-label={attachedDocument ? t("composer.changeDoc") : t("composer.attachDoc")}
             aria-haspopup="dialog"
             aria-expanded={docMenuOpen}
             onClick={() => {
@@ -1970,12 +1994,12 @@ const Composer = forwardRef(function Composer({ agents, documents, activeAgentId
             📎
           </button>
           {docMenuOpen ? (
-            <div className="doc-picker-menu" role="dialog" aria-label="Attach doc">
+            <div className="doc-picker-menu" role="dialog" aria-label={t("composer.attachDoc")}>
               <input
                 className="doc-picker-search"
                 type="search"
                 value={docQuery}
-                placeholder="Search docs"
+                placeholder={t("sidebar.searchDocs")}
                 onChange={(event) => setDocQuery(event.target.value)}
                 autoFocus
               />
@@ -1990,7 +2014,7 @@ const Composer = forwardRef(function Composer({ agents, documents, activeAgentId
                       setDocQuery("");
                     }}
                   >
-                    No doc
+                    {t("composer.noDoc")}
                   </button>
                 ) : null}
                 {docPickerOptions.length ? docPickerOptions.map((document) => (
@@ -2014,7 +2038,7 @@ const Composer = forwardRef(function Composer({ agents, documents, activeAgentId
                     <small>{documentFolderLabel(document.folder)}</small>
                   </button>
                 )) : (
-                  <div className="doc-picker-empty">No matching docs</div>
+                  <div className="doc-picker-empty">{t("sidebar.noMatchingDocs")}</div>
                 )}
               </div>
             </div>
@@ -2025,7 +2049,7 @@ const Composer = forwardRef(function Composer({ agents, documents, activeAgentId
         <textarea
           ref={textareaRef}
           value={value}
-          placeholder={activeAgentId ? `@${activeAgentId} Ask an agent...` : "Mention an agent to send..."}
+          placeholder={activeAgentId ? t("composer.askAgent", { name: activeAgentDisplayName }) : t("composer.mentionAgent")}
           onChange={(event) => {
             setValue(event.target.value);
             selectionRef.current = {
@@ -2067,10 +2091,10 @@ const Composer = forwardRef(function Composer({ agents, documents, activeAgentId
         <button
           className="send-button"
           onClick={submit}
-          title="Enter to send, Ctrl/Cmd+Enter for a new line"
+          title={t("composer.sendTooltip")}
           disabled={!canSubmit}
         >
-          {sending ? "Sending..." : "Send"}
+          {sending ? t("composer.sending") : t("composer.send")}
         </button>
       </div>
     </footer>
@@ -2621,4 +2645,8 @@ if (window.aiTeams) {
 }
 const root = rootElement.__aiTeamsRoot || createRoot(rootElement);
 rootElement.__aiTeamsRoot = root;
-root.render(<App />);
+root.render(
+  <LocaleProvider>
+    <App />
+  </LocaleProvider>
+);
