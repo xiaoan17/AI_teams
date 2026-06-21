@@ -4,31 +4,33 @@
   /* Default tokens match the Workbench Dark preset so the pre-React paint is
      seamless; App overrides these inline on .app-shell per selected theme. */
   --app-bg: #0e1114;
-  --sidebar-bg: #14191e;
-  --panel-bg: #181f25;
-  --surface-bg: #10151a;
-  --header-bg: #161c22;
-  --control-bg: #1b232a;
-  --control-strong-bg: #273542;
-  --control-strong-border: #46596b;
-  --input-bg: #10161b;
-  --text: #e8edf2;
-  --text-soft: #cbd5df;
-  --muted: #8995a0;
-  --border: #252c33;
-  --border-strong: #33404b;
-  --accent: #f2c14e;
-  --focus: #5f83b6;
-  --focus-ring: rgba(111, 147, 200, 0.28);
-  --success: #52b788;
-  --warning: #f2c14e;
+  --sidebar-bg: #14191c;
+  --panel-bg: #1a2125;
+  --surface-bg: #14191c;
+  --header-bg: #171d21;
+  --control-bg: #1f272c;
+  --control-strong-bg: #28333a;
+  --control-strong-border: #3d4d57;
+  --input-bg: #12181c;
+  --text: #e8edf1;
+  --text-soft: #c2ccd4;
+  --muted: #97a3ad;
+  --border: #252d33;
+  --border-strong: #34404a;
+  --accent: #2dd4bf;
+  --accent-ink: #06231f;
+  --focus: #2dd4bf;
+  --focus-ring: rgba(45, 212, 191, 0.30);
+  --success: #3fb950;
+  --warning: #d29922;
   --danger: #ef6f6c;
   --stopped: #6e7a85;
-  --hover-bg: #1b232a;
-  --active-row-bg: #1d2630;
-  --pill-bg: #222a31;
-  --notice-bg: #1b2935;
-  --notice-text: #d9e7f6;
+  --highlight: #e3a857;
+  --hover-bg: #283037;
+  --active-row-bg: #1c2a2c;
+  --pill-bg: #222b30;
+  --notice-bg: #15282a;
+  --notice-text: #bff0e7;
   --terminal-bg: #0d1114;
   --terminal-fg: #d9e0e8;
   background: var(--app-bg);
@@ -177,10 +179,10 @@ button {
 
 .workspace-label {
   color: var(--muted);
-  font-size: 11px;
-  font-weight: 800;
+  font-size: 12px;
+  font-weight: 600;
   line-height: 1;
-  text-transform: uppercase;
+  letter-spacing: 0.04em;
 }
 
 .workspace-current {
@@ -214,7 +216,7 @@ button {
 
 .workspace-current-name {
   font-size: 13px;
-  font-weight: 800;
+  font-weight: 700;
 }
 
 .workspace-picker {
@@ -223,9 +225,9 @@ button {
   align-items: center;
   gap: 6px;
   color: var(--muted);
-  font-size: 11px;
-  font-weight: 700;
-  text-transform: uppercase;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
 }
 
 .workspace-picker select {
@@ -239,7 +241,7 @@ button {
   outline: none;
   padding: 0 7px;
   font-size: 12px;
-  font-weight: 650;
+  font-weight: 600;
   text-transform: none;
 }
 
@@ -254,9 +256,9 @@ button {
   align-items: center;
   gap: 7px;
   color: var(--muted);
-  font-size: 11px;
-  font-weight: 700;
-  text-transform: uppercase;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
   cursor: pointer;
 }
 
@@ -280,7 +282,7 @@ button {
   color: var(--text-soft);
   cursor: pointer;
   font-size: 14px;
-  font-weight: 800;
+  font-weight: 700;
   line-height: 1;
 }
 
@@ -339,16 +341,17 @@ button {
 
 .panel-heading span {
   color: var(--muted);
-  font-size: 11px;
-  font-weight: 750;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
 }
 
 .panel-title {
   margin-bottom: 8px;
   color: var(--text-soft);
-  font-size: 11px;
-  font-weight: 800;
-  text-transform: uppercase;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
 }
 
 .panel-heading .panel-title {
@@ -364,7 +367,7 @@ button {
   color: var(--text-soft);
   cursor: pointer;
   font-size: 11px;
-  font-weight: 750;
+  font-weight: 700;
 }
 
 .agent-list {
@@ -484,11 +487,14 @@ button {
   color: var(--text);
 }
 
-/* WS-C C2: Role is primary, runtime is secondary.
-   The role select reads as the main control; the runtime drops to a small
-   caption + compact select underneath, de-emphasized until hover/focus. */
+/* WS-C C2: Each agent row is just two stacked dropdowns — the role select
+   (primary) and the runtime/agent-type select (secondary) beneath it. Status
+   is carried by the left dot (with a name + status tooltip on hover), so the
+   row stays clean instead of cramming an identity line + status label in. */
 .agent-main-stacked {
-  gap: 3px;
+  display: grid;
+  gap: 4px;
+  min-width: 0;
 }
 .agent-main-stacked .agent-role-select {
   height: 26px;
@@ -496,29 +502,24 @@ button {
   color: var(--text);
   font-weight: 600;
 }
-.agent-runtime-subline {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  min-width: 0;
-  opacity: 0.62;
+/* Unassigned role reads as a muted placeholder, distinct from a real role
+   named "员工"/"Role". */
+.agent-main-stacked .agent-role-select-unassigned {
+  color: var(--muted);
+  font-weight: 500;
+  font-style: italic;
+}
+/* Runtime is the secondary control: a compact select, de-emphasized until the
+   row is hovered/focused. */
+.agent-main-stacked .agent-type-select {
+  height: 22px;
+  font-size: 11px;
+  opacity: 0.7;
   transition: opacity 120ms ease;
 }
-.agent-row:hover .agent-runtime-subline,
-.agent-row:focus-within .agent-runtime-subline {
+.agent-row:hover .agent-main-stacked .agent-type-select,
+.agent-row:focus-within .agent-main-stacked .agent-type-select {
   opacity: 1;
-}
-.agent-runtime-caption {
-  flex: 0 0 auto;
-  font-size: 10px;
-  letter-spacing: 0.02em;
-  color: var(--muted);
-  text-transform: uppercase;
-}
-.agent-runtime-subline .agent-type-select {
-  height: 20px;
-  font-size: 10.5px;
-  flex: 1 1 auto;
 }
 
 .icon-button {
@@ -543,7 +544,7 @@ button {
   background: var(--control-bg);
   color: var(--text-soft);
   font-size: 12px;
-  font-weight: 800;
+  font-weight: 700;
   line-height: 1;
   cursor: pointer;
   transition: border-color 120ms ease, color 120ms ease, background 120ms ease;
@@ -659,7 +660,7 @@ button {
 }
 
 .tree-row {
-  --tree-indent: calc(var(--tree-depth, 0) * 14px);
+  --tree-indent: calc(var(--tree-depth, 0) * 12px);
   display: grid;
   width: 100%;
   min-width: 0;
@@ -670,11 +671,11 @@ button {
 }
 
 .folder-row {
-  grid-template-columns: 14px 16px minmax(0, 1fr) auto;
+  grid-template-columns: 12px minmax(0, 1fr) auto;
   align-items: center;
   gap: 4px;
   height: 28px;
-  padding: 0 7px 0 calc(4px + var(--tree-indent));
+  padding: 0 7px 0 calc(2px + var(--tree-indent));
   cursor: pointer;
   text-align: left;
 }
@@ -706,8 +707,14 @@ button {
 }
 
 .folder-count {
+  margin-left: 6px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--muted) 14%, transparent);
+  color: var(--muted);
   font-size: 11px;
-  font-weight: 750;
+  font-weight: 700;
+  line-height: 1.4;
 }
 
 .document-row {
@@ -719,8 +726,8 @@ button {
 }
 
 .document-row-pinned {
-  border-color: color-mix(in srgb, var(--accent) 42%, var(--border));
-  background: color-mix(in srgb, var(--accent) 12%, var(--panel-bg));
+  border-color: color-mix(in srgb, var(--highlight) 42%, var(--border));
+  background: color-mix(in srgb, var(--highlight) 12%, var(--panel-bg));
 }
 
 .document-open,
@@ -740,7 +747,7 @@ button {
 
 .document-open span {
   font-size: 12px;
-  font-weight: 650;
+  font-weight: 600;
 }
 
 .document-open small {
@@ -750,7 +757,7 @@ button {
 
 .document-status {
   color: var(--focus);
-  font-weight: 800;
+  font-weight: 700;
 }
 
 .document-status-finish {
@@ -789,11 +796,11 @@ button {
 
 .document-insert {
   color: var(--focus);
-  font-weight: 800;
+  font-weight: 700;
 }
 
 .document-pin {
-  color: var(--accent);
+  color: var(--highlight);
 }
 
 .document-empty {
@@ -864,7 +871,7 @@ button {
 
 .workspace {
   display: grid;
-  grid-template-rows: minmax(0, 1fr) 116px;
+  grid-template-rows: minmax(0, 1fr) auto;
   min-width: 0;
   min-height: 0;
   background: var(--app-bg);
@@ -923,16 +930,16 @@ button {
   color: var(--text-soft);
 }
 .toast-error {
-  border-color: color-mix(in srgb, var(--danger, #e5484d) 60%, var(--border-strong));
+  border-color: color-mix(in srgb, var(--danger) 60%, var(--border-strong));
 }
 .toast-error .toast-glyph {
-  color: var(--danger, #e5484d);
+  color: var(--danger);
 }
 .toast-success {
-  border-color: color-mix(in srgb, #2ecc71 55%, var(--border-strong));
+  border-color: color-mix(in srgb, var(--success) 55%, var(--border-strong));
 }
 .toast-success .toast-glyph {
-  color: #2ecc71;
+  color: var(--success);
 }
 .toast-info {
   border-color: color-mix(in srgb, var(--focus) 55%, var(--border-strong));
@@ -1012,7 +1019,7 @@ button {
 .terminal-name {
   overflow: hidden;
   font-size: 14px;
-  font-weight: 800;
+  font-weight: 700;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -1028,7 +1035,7 @@ button {
   background: var(--pill-bg);
   color: var(--text-soft);
   font-size: 12px;
-  font-weight: 650;
+  font-weight: 600;
 }
 
 .status-running .status-dot,
@@ -1147,12 +1154,19 @@ button {
 
 .composer {
   display: grid;
-  grid-template-rows: 28px minmax(0, 1fr);
+  grid-template-rows: auto;
   gap: 8px;
   min-width: 0;
   border-top: 1px solid var(--border);
   background: var(--sidebar-bg);
   padding: 10px 16px 12px;
+}
+
+/* The mention/attachment topline only exists when there's something to show
+   (T6): no empty 28px row + gap on the default empty composer. */
+.composer-has-targets,
+.composer-has-doc {
+  grid-template-rows: 28px auto;
 }
 
 .composer-topline {
@@ -1174,25 +1188,32 @@ button {
 .composer-doc-tools {
   position: relative;
   display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 6px;
+  align-items: end;
+  justify-content: center;
   min-width: 0;
 }
 
 .attach-doc-button {
   display: grid;
   place-items: center;
-  width: 28px;
-  height: 26px;
+  width: 36px;
+  height: 58px;
   border: 1px solid var(--border-strong);
-  border-radius: 7px;
+  border-radius: 8px;
   background: var(--control-bg);
   color: var(--text-soft);
   cursor: pointer;
   font-size: 16px;
-  font-weight: 800;
+  font-weight: 700;
   line-height: 1;
+}
+
+/* The attach button reflects an armed attachment without needing the chip in
+   view: accent border when a doc is attached. */
+.composer-has-doc .attach-doc-button,
+.attach-doc-button[aria-expanded="true"] {
+  border-color: var(--accent);
+  color: var(--text);
 }
 
 .attachment-chip {
@@ -1201,9 +1222,9 @@ button {
   min-width: 0;
   max-width: min(300px, 34vw);
   height: 26px;
-  border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--border));
+  border: 1px solid color-mix(in srgb, var(--highlight) 45%, var(--border));
   border-radius: 999px;
-  background: color-mix(in srgb, var(--accent) 10%, var(--control-bg));
+  background: color-mix(in srgb, var(--highlight) 10%, var(--control-bg));
   color: var(--text-soft);
   padding: 0 3px 0 9px;
   font-size: 12px;
@@ -1239,7 +1260,7 @@ button {
 .doc-picker-menu {
   position: absolute;
   right: 0;
-  bottom: 32px;
+  bottom: 64px;
   z-index: 30;
   display: grid;
   gap: 8px;
@@ -1298,7 +1319,7 @@ button {
 
 .doc-picker-option span {
   font-size: 12px;
-  font-weight: 650;
+  font-weight: 600;
 }
 
 .doc-picker-option small {
@@ -1320,17 +1341,19 @@ button {
 
 .composer-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 88px;
+  grid-template-columns: minmax(0, 1fr) 36px 88px;
   gap: 10px;
   min-height: 0;
+  align-items: end;
 }
 
 .composer textarea {
   width: 100%;
   height: 58px;
-  min-height: 0;
-  max-height: 58px;
+  min-height: 58px;
+  max-height: 160px;
   resize: none;
+  overflow-y: auto;
   border: 1px solid var(--border-strong);
   border-radius: 8px;
   background: var(--input-bg);
@@ -1344,7 +1367,8 @@ button {
 }
 
 .send-button {
-  height: 58px;
+  align-self: stretch;
+  min-height: 58px;
 }
 
 .send-button:disabled {
@@ -1384,6 +1408,54 @@ button {
 
 code {
   color: var(--accent);
+}
+
+/* ---- In-app confirm dialog (replaces window.confirm) ---- */
+.confirm-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 70;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+
+.confirm-dialog {
+  width: min(380px, 92vw);
+  display: grid;
+  gap: 12px;
+  background: var(--panel-bg);
+  border: 1px solid var(--border-strong);
+  border-radius: 12px;
+  padding: 18px 18px 14px;
+  box-shadow: 0 18px 60px rgba(0, 0, 0, 0.55);
+}
+
+.confirm-title {
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.confirm-body {
+  color: var(--text-soft);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.confirm-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 2px;
+}
+
+.confirm-actions .panel-action {
+  height: 28px;
+  padding: 0 14px;
+  font-size: 12px;
 }
 
 /* ---- Role config modal ---- */
@@ -1484,10 +1556,9 @@ code {
 }
 .onboarding-section-title {
   color: var(--text-soft);
-  font-size: 11px;
-  font-weight: 700;
+  font-size: 12px;
+  font-weight: 600;
   letter-spacing: 0.04em;
-  text-transform: uppercase;
   opacity: 0.7;
 }
 .onboarding-row {
@@ -1534,11 +1605,11 @@ code {
   font-size: 12.5px;
 }
 .onboarding-hint-ok {
-  background: color-mix(in srgb, #2ecc71 16%, var(--control-bg));
+  background: color-mix(in srgb, var(--success) 16%, var(--control-bg));
   color: var(--text-soft);
 }
 .onboarding-hint-warn {
-  background: color-mix(in srgb, #e0a83e 18%, var(--control-bg));
+  background: color-mix(in srgb, var(--warning) 18%, var(--control-bg));
   color: var(--text-soft);
 }
 .onboarding-footer {
@@ -1575,6 +1646,27 @@ code {
   color: var(--text-soft);
   font-size: 12px;
   cursor: pointer;
+}
+
+/* T7: success and error notices share a slot but read differently. Error stays
+   red; success uses the same green accent as .toast-success. */
+.role-modal-notice {
+  margin: 8px 18px 0;
+  padding: 7px 10px;
+  border-radius: 7px;
+  border: 1px solid var(--border-strong);
+  background: var(--control-bg);
+  color: var(--text-soft);
+  font-size: 12px;
+  cursor: pointer;
+}
+.role-modal-notice-error {
+  border-color: color-mix(in srgb, var(--danger) 55%, var(--border-strong));
+  color: color-mix(in srgb, var(--danger) 70%, var(--text));
+}
+.role-modal-notice-success {
+  border-color: color-mix(in srgb, var(--success) 55%, var(--border-strong));
+  color: color-mix(in srgb, var(--success) 72%, var(--text));
 }
 
 .role-modal-footer {
@@ -1630,12 +1722,11 @@ code {
   flex-shrink: 0;
 }
 .role-source-badge {
-  font-size: 10px;
+  font-size: 11px;
   padding: 1px 6px;
   border-radius: 4px;
   border: 1px solid var(--border-strong);
   color: var(--muted);
-  text-transform: uppercase;
 }
 .role-source-workspace {
   color: var(--accent);
@@ -1700,14 +1791,14 @@ code {
 /* button accents reused inside the modal */
 .panel-action.role-primary {
   background: var(--accent);
-  color: #1a1205;
+  color: var(--accent-ink);
   border-color: var(--accent);
 }
 .panel-action.role-primary:disabled {
   opacity: 0.5;
 }
 .panel-action.role-danger {
-  color: #ff8b8b;
+  color: var(--danger);
 }
 
 .role-runtime-block {
@@ -1722,7 +1813,7 @@ code {
   align-items: center;
   gap: 8px;
   font-size: 12px;
-  font-weight: 750;
+  font-weight: 700;
   color: var(--text-soft);
   margin-bottom: 8px;
 }

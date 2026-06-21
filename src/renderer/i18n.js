@@ -51,6 +51,7 @@ const zh = {
   "sidebar.configAgent": "配置 Agent",
   "sidebar.configAgentTooltip": "导入外部 Agent、查看与编辑 Role 配置",
   "sidebar.role": "员工",
+  "sidebar.unassignedRole": "未分配角色",
   "sidebar.agentType": "运行时",
   "sidebar.off": "停用",
   "sidebar.startAgent": "启动",
@@ -61,6 +62,13 @@ const zh = {
   "sidebar.searchDocs": "搜索文档",
   "sidebar.noMatchingDocs": "没有匹配的文档",
   "sidebar.noDocs": "暂无文档",
+
+  // document filter + state labels
+  "docFilter.all": "全部",
+  "docFilter.todo": "待办",
+  "docFilter.finish": "完成",
+  "docState.todo": "待办",
+  "docState.finish": "完成",
 
   // composer
   "composer.targets": "目标：",
@@ -89,7 +97,40 @@ const zh = {
   "empty.startAll": "全部启动",
 
   // toast
-  "toast.dismiss": "关闭"
+  "toast.dismiss": "关闭",
+
+  // confirm dialog
+  "confirm.confirm": "确定",
+  "confirm.cancel": "取消",
+  "confirm.discardTitle": "放弃未保存的修改？",
+  "confirm.discardBody": "有未保存的修改，确定关闭吗？",
+  "confirm.deleteRoleGlobal": "「{id}」是全局 Role，删除会影响所有项目。确定删除吗？",
+  "confirm.deleteRole": "确定删除 Role「{id}」吗？",
+
+  // role config modal notices
+  "roleModal.importUnsupported": "当前环境不支持导入。",
+  "roleModal.imported": "已导入：{id}",
+  "roleModal.saved": "已保存：{id}",
+  "roleModal.deleted": "已删除：{id}",
+  "roleModal.deletedAffected": "已删除：{id}（{n} 个成员仍引用，需重新分配）",
+
+  // onboarding / health-check
+  "onboarding.title": "👋 欢迎使用 AI Teams",
+  "onboarding.subtitle": "本地多 Agent 终端工作台 —— 先确认环境就绪",
+  "onboarding.aria": "健康检查",
+  "onboarding.checking": "正在检测运行环境…",
+  "onboarding.envTitle": "运行环境",
+  "onboarding.installed": "已安装",
+  "onboarding.installedVersion": "已安装 ({version})",
+  "onboarding.installedNotRunnable": "已安装但无法运行",
+  "onboarding.notFound": "未检测到",
+  "onboarding.ready": "环境就绪，可以开始组队。",
+  "onboarding.notReady": "至少需要 tmux + 一个可运行的 Agent CLI。",
+  "onboarding.dontShowAgain": "下次不再显示",
+  "onboarding.recheck": "重新检测",
+  "onboarding.rechecking": "检测中…",
+  "onboarding.startTeam": "开始组队 →",
+  "onboarding.installGuide": "安装指引 ↗"
 };
 
 const en = {
@@ -123,6 +164,7 @@ const en = {
   "sidebar.configAgent": "Configure Agent",
   "sidebar.configAgentTooltip": "Import external agents, view and edit role configs",
   "sidebar.role": "Role",
+  "sidebar.unassignedRole": "No role",
   "sidebar.agentType": "Runtime",
   "sidebar.off": "Off",
   "sidebar.startAgent": "Start agent",
@@ -133,6 +175,13 @@ const en = {
   "sidebar.searchDocs": "Search docs",
   "sidebar.noMatchingDocs": "No matching docs",
   "sidebar.noDocs": "No docs",
+
+  // document filter + state labels
+  "docFilter.all": "All",
+  "docFilter.todo": "Todo",
+  "docFilter.finish": "Finish",
+  "docState.todo": "Todo",
+  "docState.finish": "Finish",
 
   // composer
   "composer.targets": "Targets: ",
@@ -161,7 +210,40 @@ const en = {
   "empty.startAll": "Start all",
 
   // toast
-  "toast.dismiss": "Dismiss"
+  "toast.dismiss": "Dismiss",
+
+  // confirm dialog
+  "confirm.confirm": "Confirm",
+  "confirm.cancel": "Cancel",
+  "confirm.discardTitle": "Discard unsaved changes?",
+  "confirm.discardBody": "You have unsaved changes. Close anyway?",
+  "confirm.deleteRoleGlobal": "\"{id}\" is a global role; deleting it affects every project. Delete anyway?",
+  "confirm.deleteRole": "Delete role \"{id}\"?",
+
+  // role config modal notices
+  "roleModal.importUnsupported": "Import is not supported in this environment.",
+  "roleModal.imported": "Imported: {id}",
+  "roleModal.saved": "Saved: {id}",
+  "roleModal.deleted": "Deleted: {id}",
+  "roleModal.deletedAffected": "Deleted: {id} ({n} member(s) still reference it and need reassigning)",
+
+  // onboarding / health-check
+  "onboarding.title": "👋 Welcome to AI Teams",
+  "onboarding.subtitle": "A local multi-agent terminal workspace — let's confirm your environment first",
+  "onboarding.aria": "Health check",
+  "onboarding.checking": "Checking your environment…",
+  "onboarding.envTitle": "Environment",
+  "onboarding.installed": "Installed",
+  "onboarding.installedVersion": "Installed ({version})",
+  "onboarding.installedNotRunnable": "Installed but not runnable",
+  "onboarding.notFound": "Not found",
+  "onboarding.ready": "Environment is ready — you can start your team.",
+  "onboarding.notReady": "You need at least tmux + one runnable agent CLI.",
+  "onboarding.dontShowAgain": "Don't show again",
+  "onboarding.recheck": "Re-check",
+  "onboarding.rechecking": "Checking…",
+  "onboarding.startTeam": "Start team →",
+  "onboarding.installGuide": "Install guide ↗"
 };
 
 export const DICTIONARIES = { zh, en };

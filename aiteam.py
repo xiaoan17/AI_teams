@@ -40,7 +40,8 @@ class AITeamError(RuntimeError):
 
 
 def utc_now() -> str:
-    return dt.datetime.now(dt.UTC).replace(microsecond=0).isoformat()
+    # dt.timezone.utc works on Python 3.9+ (dt.UTC is 3.11+ only).
+    return dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat()
 
 
 def local_stamp() -> str:

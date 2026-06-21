@@ -292,7 +292,15 @@ function agentDisplayName(agent) {
 }
 
 function agentPanelTitle(agent) {
-  return [agentDisplayName(agent), agentRuntimeLabel(agent)].filter(Boolean).join(" + ");
+  // With a role assigned, show "Role + Runtime". Without a role,
+  // agentDisplayName falls back to agent.name (which agentRuntimeLabel already
+  // folds in), so joining would duplicate it ("Codex Demo + Codex Demo").
+  // In that case show the runtime label alone.
+  const hasRole = Boolean(String(agent?.role?.title || "").trim());
+  if (hasRole) {
+    return [agentDisplayName(agent), agentRuntimeLabel(agent)].filter(Boolean).join(" + ");
+  }
+  return agentRuntimeLabel(agent) || agentDisplayName(agent);
 }
 
 function agentRuntimeLabel(agent) {
@@ -375,15 +383,15 @@ function normalizeSearch(value) {
 }
 
 const documentFieldFilters = [
-  { id: "all", label: "All" },
-  { id: "todo", label: "Todo" },
-  { id: "finish", label: "Finish" }
+  { id: "all", labelKey: "docFilter.all" },
+  { id: "todo", labelKey: "docFilter.todo" },
+  { id: "finish", labelKey: "docFilter.finish" }
 ];
 
-function documentStateLabel(document) {
+function documentStateLabelKey(document) {
   const state = document?.fields?.state;
-  if (state === "finish") return "Finish";
-  if (state === "todo") return "Todo";
+  if (state === "finish") return "docState.finish";
+  if (state === "todo") return "docState.todo";
   return "";
 }
 
@@ -435,7 +443,7 @@ function filterDocumentTree(node, query, fieldFilter = "all", queryMatchedAncest
   };
 }
 
-function formatDocumentTime(value) {
+function formatDocumentTime(value, t) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return "";
   const now = Date.now();
@@ -443,10 +451,11 @@ function formatDocumentTime(value) {
   const minute = 60 * 1000;
   const hour = 60 * minute;
   const day = 24 * hour;
-  if (diffMs < minute) return "now";
-  if (diffMs < hour) return `${Math.floor(diffMs / minute)}m ago`;
-  if (diffMs < day) return `${Math.floor(diffMs / hour)}h ago`;
-  if (diffMs < 7 * day) return `${Math.floor(diffMs / day)}d ago`;
+  const translate = typeof t === "function" ? t : (key) => key;
+  if (diffMs < minute) return translate("time.now");
+  if (diffMs < hour) return translate("time.minutesAgo", { n: Math.floor(diffMs / minute) });
+  if (diffMs < day) return translate("time.hoursAgo", { n: Math.floor(diffMs / hour) });
+  if (diffMs < 7 * day) return translate("time.daysAgo", { n: Math.floor(diffMs / day) });
   const sameYear = new Date(now).getFullYear() === date.getFullYear();
   return date.toLocaleDateString(undefined, sameYear
     ? { month: "short", day: "numeric" }
@@ -465,6 +474,7 @@ function DocumentTreeNode({
   onInsertDocumentPath,
   onToggleDocumentPinned
 }) {
+  const t = useT();
   if (!node) return null;
 
   if (node.type === "folder") {
@@ -481,7 +491,6 @@ function DocumentTreeNode({
           aria-expanded={expanded}
         >
           <span className="folder-chevron">{hasChildren ? (expanded ? "▾" : "▸") : ""}</span>
-          <span className="folder-icon">▣</span>
           <span className="folder-name">{node.name}</span>
           <span className="folder-count">{node.documentCount}</span>
         </button>
@@ -508,8 +517,8 @@ function DocumentTreeNode({
     );
   }
 
-  const stateLabel = documentStateLabel(node);
-  const updatedLabel = formatDocumentTime(node.updatedAt);
+  const stateLabelKey = documentStateLabelKey(node);
+  const updatedLabel = formatDocumentTime(node.updatedAt, t);
 
   return (
     <div
@@ -524,10 +533,10 @@ function DocumentTreeNode({
       <button className="document-open" type="button" onClick={() => onOpen(node.path)} title={node.relativePath}>
         <span>{node.name}</span>
         <small>
-          {stateLabel ? (
+          {stateLabelKey ? (
             <>
               <span className={`document-status document-status-${node.fields?.state}`}>
-                {stateLabel}
+                {t(stateLabelKey)}
               </span>
               {" · "}
             </>
@@ -989,6 +998,7 @@ function detailToForm(detail) {
 }
 
 function OnboardingModal({ api, onClose, onStartTeam }) {
+  const t = useT();
   // null = first load not yet probed; the effect kicks off the first checkHealth.
   const [health, setHealth] = useState(null);
   const [busy, setBusy] = useState(false);
@@ -1045,9 +1055,17 @@ function OnboardingModal({ api, onClose, onStartTeam }) {
   const ready = Boolean(tmux.runnable && hasRunnableAgent);
 
   const statusGlyph = (item) => {
-    if (item.runnable) return { glyph: "✅", cls: "ok", text: `已安装${item.version ? ` (${item.version})` : ""}` };
-    if (item.installed) return { glyph: "⚠️", cls: "warn", text: "已安装但无法运行" };
-    return { glyph: "❌", cls: "miss", text: "未检测到" };
+    if (item.runnable) {
+      return {
+        glyph: "✅",
+        cls: "ok",
+        text: item.version
+          ? t("onboarding.installedVersion", { version: item.version })
+          : t("onboarding.installed")
+      };
+    }
+    if (item.installed) return { glyph: "⚠️", cls: "warn", text: t("onboarding.installedNotRunnable") };
+    return { glyph: "❌", cls: "miss", text: t("onboarding.notFound") };
   };
 
   const Row = ({ name, item }) => {
@@ -1062,7 +1080,7 @@ function OnboardingModal({ api, onClose, onStartTeam }) {
             type="button"
             className="onboarding-install-link"
             onClick={() => (api.openExternal ? api.openExternal(item.docUrl) : window.open?.(item.docUrl, "_blank"))}
-          >安装指引 ↗</button>
+          >{t("onboarding.installGuide")}</button>
         ) : null}
       </div>
     );
@@ -1070,28 +1088,28 @@ function OnboardingModal({ api, onClose, onStartTeam }) {
 
   return (
     <div className="role-modal-overlay" onMouseDown={(event) => { if (event.target === event.currentTarget) handleClose(); }}>
-      <div className="role-modal onboarding-modal" role="dialog" aria-label="健康检查">
+      <div className="role-modal onboarding-modal" role="dialog" aria-label={t("onboarding.aria")}>
         <div className="role-modal-header">
-          <strong>👋 欢迎使用 AI Teams</strong>
-          <button type="button" className="role-modal-close" onClick={handleClose} aria-label="关闭">✕</button>
+          <strong>{t("onboarding.title")}</strong>
+          <button type="button" className="role-modal-close" onClick={handleClose} aria-label={t("common.close")}>✕</button>
         </div>
 
-        <div className="onboarding-subtitle">本地多 Agent 终端工作台 —— 先确认环境就绪</div>
+        <div className="onboarding-subtitle">{t("onboarding.subtitle")}</div>
 
         {error ? <div className="role-modal-error" onClick={() => setError("")}>{error}</div> : null}
 
         <div className="role-modal-body onboarding-body">
           {health === null ? (
-            <div className="onboarding-loading">正在检测运行环境…</div>
+            <div className="onboarding-loading">{t("onboarding.checking")}</div>
           ) : (
             <>
-              <div className="onboarding-section-title">运行环境</div>
+              <div className="onboarding-section-title">{t("onboarding.envTitle")}</div>
               <Row name="tmux" item={tmux} />
               {agents.map((a) => (
                 <Row key={a.type} name={a.name || a.type} item={a} />
               ))}
               <div className={`onboarding-hint ${ready ? "onboarding-hint-ok" : "onboarding-hint-warn"}`}>
-                {ready ? "环境就绪，可以开始组队。" : "至少需要 tmux + 一个可运行的 Agent CLI。"}
+                {ready ? t("onboarding.ready") : t("onboarding.notReady")}
               </div>
             </>
           )}
@@ -1100,11 +1118,11 @@ function OnboardingModal({ api, onClose, onStartTeam }) {
         <div className="onboarding-footer">
           <label className="onboarding-dont-show">
             <input type="checkbox" checked={dontShowAgain} onChange={(e) => setDontShowAgain(e.target.checked)} />
-            下次不再显示
+            {t("onboarding.dontShowAgain")}
           </label>
           <span className="onboarding-footer-actions">
-            <button type="button" className="panel-action" disabled={busy} onClick={runCheck}>{busy ? "检测中…" : "重新检测"}</button>
-            <button type="button" className="panel-action onboarding-primary" onClick={startTeam}>开始组队 →</button>
+            <button type="button" className="panel-action" disabled={busy} onClick={runCheck}>{busy ? t("onboarding.rechecking") : t("onboarding.recheck")}</button>
+            <button type="button" className="panel-action onboarding-primary" onClick={startTeam}>{t("onboarding.startTeam")}</button>
           </span>
         </div>
       </div>
@@ -1112,10 +1130,56 @@ function OnboardingModal({ api, onClose, onStartTeam }) {
   );
 }
 
+function ConfirmDialog({ title, body, confirmLabel, cancelLabel, danger, onConfirm, onCancel }) {
+  const t = useT();
+  useEffect(() => {
+    const onKey = (event) => {
+      if (event.key === "Escape") {
+        event.stopPropagation();
+        onCancel();
+      } else if (event.key === "Enter") {
+        event.stopPropagation();
+        onConfirm();
+      }
+    };
+    document.addEventListener("keydown", onKey, true);
+    return () => document.removeEventListener("keydown", onKey, true);
+  }, [onConfirm, onCancel]);
+
+  return (
+    <div className="confirm-overlay" onMouseDown={(event) => { if (event.target === event.currentTarget) onCancel(); }}>
+      <div className="confirm-dialog" role="alertdialog" aria-label={title}>
+        {title ? <div className="confirm-title">{title}</div> : null}
+        <div className="confirm-body">{body}</div>
+        <div className="confirm-actions">
+          <button type="button" className="panel-action" onClick={onCancel}>
+            {cancelLabel || t("confirm.cancel")}
+          </button>
+          <button
+            type="button"
+            className={`panel-action ${danger ? "role-danger" : "role-primary"}`}
+            onClick={onConfirm}
+            autoFocus
+          >
+            {confirmLabel || t("confirm.confirm")}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function RoleConfigModal({ api, roles, onClose, onRolesChanged }) {
+  const t = useT();
   const [tab, setTab] = useState("list");
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState("");
+  // notice = { level: "error" | "success", text }. Success and failure share
+  // one notice slot but render with distinct styling (T7), so a "Saved: X"
+  // message no longer reads as a red error.
+  const [notice, setNotice] = useState(null);
+  const showError = useCallback((text) => setNotice({ level: "error", text: String(text || "") }), []);
+  const showSuccess = useCallback((text) => setNotice({ level: "success", text: String(text || "") }), []);
+  const clearNotice = useCallback(() => setNotice(null), []);
   // import tab
   const [importDest, setImportDest] = useState("workspace");
   const [importId, setImportId] = useState("");
@@ -1123,24 +1187,36 @@ function RoleConfigModal({ api, roles, onClose, onRolesChanged }) {
   const [editing, setEditing] = useState(null); // { id, origin }
   const [form, setForm] = useState(blankRoleForm());
   const [dirty, setDirty] = useState(false);
+  // In-app confirm dialog state. null = closed; otherwise { title?, body,
+  // danger?, onConfirm }. Replaces window.confirm so the prompt matches the
+  // app's dark theme instead of a native OS dialog.
+  const [confirm, setConfirm] = useState(null);
 
   const closeGuarded = useCallback(() => {
-    if (dirty && !window.confirm("有未保存的修改，确定关闭吗？")) {
+    if (dirty) {
+      setConfirm({
+        title: t("confirm.discardTitle"),
+        body: t("confirm.discardBody"),
+        danger: true,
+        onConfirm: () => { setConfirm(null); onClose(); }
+      });
       return;
     }
     onClose();
-  }, [dirty, onClose]);
+  }, [dirty, onClose, t]);
 
   useEffect(() => {
     const onKey = (event) => {
       if (event.key === "Escape") {
+        // When the in-app confirm is open, let it own Esc (it closes itself).
+        if (confirm) return;
         event.stopPropagation();
         closeGuarded();
       }
     };
     document.addEventListener("keydown", onKey, true);
     return () => document.removeEventListener("keydown", onKey, true);
-  }, [closeGuarded]);
+  }, [closeGuarded, confirm]);
 
   const updateForm = (patch) => {
     setForm((current) => ({ ...current, ...patch }));
@@ -1156,10 +1232,10 @@ function RoleConfigModal({ api, roles, onClose, onRolesChanged }) {
   };
 
   const openImport = async () => {
-    setError("");
+    clearNotice();
     try {
       if (!api.pickDirectory || !api.importRole) {
-        setError("当前环境不支持导入。");
+        showError(t("roleModal.importUnsupported"));
         return;
       }
       const sourcePath = await api.pickDirectory({ title: "选择一个外部 Agent / Role 文件夹" });
@@ -1172,16 +1248,16 @@ function RoleConfigModal({ api, roles, onClose, onRolesChanged }) {
       setImportId("");
       setTab("list");
       const warn = Array.isArray(result?.warnings) && result.warnings.length ? ` (${result.warnings.join(" ")})` : "";
-      setError(`已导入：${result?.id || sourcePath}${warn}`);
+      showSuccess(`${t("roleModal.imported", { id: result?.id || sourcePath })}${warn}`);
     } catch (err) {
-      setError(err.message);
+      showError(err.message);
     } finally {
       setBusy(false);
     }
   };
 
   const openEdit = async (roleId) => {
-    setError("");
+    clearNotice();
     setBusy(true);
     try {
       const detail = await api.loadRoleDetail(roleId);
@@ -1190,7 +1266,7 @@ function RoleConfigModal({ api, roles, onClose, onRolesChanged }) {
       setDirty(false);
       setTab("edit");
     } catch (err) {
-      setError(err.message);
+      showError(err.message);
     } finally {
       setBusy(false);
     }
@@ -1198,7 +1274,7 @@ function RoleConfigModal({ api, roles, onClose, onRolesChanged }) {
 
   const save = async () => {
     if (!editing) return;
-    setError("");
+    clearNotice();
     setBusy(true);
     try {
       const payload = {
@@ -1234,21 +1310,17 @@ function RoleConfigModal({ api, roles, onClose, onRolesChanged }) {
       setDirty(false);
       setEditing({ id: result.id, origin: result.origin });
       const warn = Array.isArray(result?.warnings) && result.warnings.length ? ` (${result.warnings.join(" ")})` : "";
-      setError(`已保存：${result.id}${warn}`);
+      showSuccess(`${t("roleModal.saved", { id: result.id })}${warn}`);
     } catch (err) {
-      setError(err.message);
+      showError(err.message);
     } finally {
       setBusy(false);
     }
   };
 
-  const removeRole = async (roleId, origin) => {
+  const performRemoveRole = async (roleId, origin) => {
     const isGlobal = origin === "global";
-    const prompt = isGlobal
-      ? `「${roleId}」是全局 Role，删除会影响所有项目。确定删除吗？`
-      : `确定删除 Role「${roleId}」吗？`;
-    if (!window.confirm(prompt)) return;
-    setError("");
+    clearNotice();
     setBusy(true);
     try {
       const result = await api.deleteRole(roleId, isGlobal ? { allowGlobal: true } : {});
@@ -1259,15 +1331,26 @@ function RoleConfigModal({ api, roles, onClose, onRolesChanged }) {
         setDirty(false);
         setTab("list");
       }
-      const affected = Array.isArray(result?.affectedAgents) && result.affectedAgents.length
-        ? `（${result.affectedAgents.length} 个成员仍引用，需重新分配）`
-        : "";
-      setError(`已删除：${roleId}${affected}`);
+      const affectedCount = Array.isArray(result?.affectedAgents) ? result.affectedAgents.length : 0;
+      showSuccess(affectedCount
+        ? t("roleModal.deletedAffected", { id: roleId, n: affectedCount })
+        : t("roleModal.deleted", { id: roleId }));
     } catch (err) {
-      setError(err.message);
+      showError(err.message);
     } finally {
       setBusy(false);
     }
+  };
+
+  const removeRole = (roleId, origin) => {
+    const isGlobal = origin === "global";
+    setConfirm({
+      body: isGlobal
+        ? t("confirm.deleteRoleGlobal", { id: roleId })
+        : t("confirm.deleteRole", { id: roleId }),
+      danger: true,
+      onConfirm: () => { setConfirm(null); performRemoveRole(roleId, origin); }
+    });
   };
 
   return (
@@ -1283,7 +1366,14 @@ function RoleConfigModal({ api, roles, onClose, onRolesChanged }) {
           <button type="button" className={`role-modal-tab ${tab === "edit" ? "role-modal-tab-active" : ""}`} onClick={() => setTab("edit")} disabled={!editing}>编辑{editing ? `：${editing.id}` : ""}</button>
         </div>
 
-        {error ? <div className="role-modal-error" onClick={() => setError("")}>{error}</div> : null}
+        {notice ? (
+          <div
+            className={`role-modal-notice role-modal-notice-${notice.level}`}
+            onClick={clearNotice}
+          >
+            {notice.text}
+          </div>
+        ) : null}
 
         <div className="role-modal-body">
           {tab === "list" ? (
@@ -1434,6 +1524,17 @@ function RoleConfigModal({ api, roles, onClose, onRolesChanged }) {
           </div>
         ) : null}
       </div>
+      {confirm ? (
+        <ConfirmDialog
+          title={confirm.title}
+          body={confirm.body}
+          danger={confirm.danger}
+          confirmLabel={confirm.confirmLabel}
+          cancelLabel={confirm.cancelLabel}
+          onConfirm={confirm.onConfirm}
+          onCancel={() => setConfirm(null)}
+        />
+      ) : null}
     </div>
   );
 }
@@ -1591,7 +1692,7 @@ function Sidebar({
               aria-label={collapsed ? t("sidebar.expandSidebar") : t("sidebar.collapseSidebar")}
               onClick={onToggleCollapsed}
             >
-              {collapsed ? ">" : "<"}
+              {collapsed ? "›" : "‹"}
             </button>
           </div>
         </div>
@@ -1636,7 +1737,7 @@ function Sidebar({
             aria-label={collapsed ? t("sidebar.expandSidebar") : t("sidebar.collapseSidebar")}
             onClick={onToggleCollapsed}
           >
-            {collapsed ? ">" : "<"}
+            {collapsed ? "›" : "‹"}
           </button>
         </div>
       </div>
@@ -1664,6 +1765,8 @@ function Sidebar({
         {agents.map((agent) => {
           const minimized = agent.enabled && !stoppedOrExited(agent) && minimizedAgents?.has(agent.id);
           const displayName = agentDisplayName(agent);
+          const statusText = STATUS_LABEL_KEYS[agent.status] ? t(STATUS_LABEL_KEYS[agent.status]) : agent.status;
+          const rowTitle = agent.enabled ? `${displayName} · ${statusText}` : displayName;
           const assignedRoleId = agent.role_id || (agent.role && roles.some((role) => role.id === agent.id) ? agent.id : "");
           const assignedAgentType = agent.type || agent.id || "";
           return (
@@ -1685,12 +1788,15 @@ function Sidebar({
                   onSelectAgent(agent.id);
                 }
               }}
-              title={displayName}
+              title={rowTitle}
             >
-              <span className={`agent-dot ${statusClass(agent.status)}`} />
+              <span
+                className={`agent-dot ${statusClass(agent.status)}`}
+                title={rowTitle}
+              />
               <span className="agent-main agent-main-stacked">
                 <select
-                  className="agent-role-select"
+                  className={`agent-role-select ${assignedRoleId ? "" : "agent-role-select-unassigned"}`}
                   value={assignedRoleId}
                   title={t("sidebar.role")}
                   onClick={(event) => event.stopPropagation()}
@@ -1700,33 +1806,30 @@ function Sidebar({
                     onAssignRole(agent.id, event.target.value);
                   }}
                 >
-                  <option value="">{t("sidebar.role")}</option>
+                  <option value="">{t("sidebar.unassignedRole")}</option>
                   {roles.map((role) => (
                     <option key={role.id} value={role.id}>
                       {[role.emoji, role.title || role.id].filter(Boolean).join(" ")}
                     </option>
                   ))}
                 </select>
-                <label className="agent-runtime-subline" title={t("sidebar.agentType")}>
-                  <span className="agent-runtime-caption">{t("sidebar.agentType")}</span>
-                  <select
-                    className="agent-type-select"
-                    value={assignedAgentType}
-                    title={t("sidebar.agentType")}
-                    onClick={(event) => event.stopPropagation()}
-                    onKeyDown={(event) => event.stopPropagation()}
-                    onChange={(event) => {
-                      event.stopPropagation();
-                      onAssignType(agent.id, event.target.value);
-                    }}
-                  >
-                    {agentTypes.map((type) => (
-                      <option key={type.id} value={type.id}>
-                        {type.name || type.id}
-                      </option>
-                    ))}
-                  </select>
-                </label>
+                <select
+                  className="agent-type-select"
+                  value={assignedAgentType}
+                  title={t("sidebar.agentType")}
+                  onClick={(event) => event.stopPropagation()}
+                  onKeyDown={(event) => event.stopPropagation()}
+                  onChange={(event) => {
+                    event.stopPropagation();
+                    onAssignType(agent.id, event.target.value);
+                  }}
+                >
+                  {agentTypes.map((type) => (
+                    <option key={type.id} value={type.id}>
+                      {type.name || type.id}
+                    </option>
+                  ))}
+                </select>
               </span>
               <span className="agent-actions">
                 {!agent.enabled ? (
@@ -1800,7 +1903,7 @@ function Sidebar({
             onChange={(event) => setDocumentFieldFilter(event.target.value)}
           >
             {documentFieldFilters.map((filter) => (
-              <option key={filter.id} value={filter.id}>{filter.label}</option>
+              <option key={filter.id} value={filter.id}>{t(filter.labelKey)}</option>
             ))}
           </select>
         </label>
@@ -1894,6 +1997,17 @@ const Composer = forwardRef(function Composer({ agents, documents, activeAgentId
     };
   }, []);
 
+  // Auto-grow the textarea with its content, capped by the CSS max-height
+  // (160px) beyond which it scrolls. Runs on every value change so insertText,
+  // clear-on-send, and typing all stay in sync.
+  useEffect(() => {
+    const textarea = textareaRef.current;
+    if (!textarea) return;
+    textarea.style.height = "auto";
+    const next = Math.min(textarea.scrollHeight, 160);
+    textarea.style.height = `${Math.max(next, 58)}px`;
+  }, [value]);
+
   useImperativeHandle(ref, () => ({
     insertText(text) {
       const insertValue = String(text || "");
@@ -1959,12 +2073,12 @@ const Composer = forwardRef(function Composer({ agents, documents, activeAgentId
   }, [value]);
 
   return (
-    <footer className={["composer", hasMention ? "composer-has-targets" : ""].filter(Boolean).join(" ")}>
-      <div className="composer-topline">
-        <div className="composer-targets">
-          {hasMention ? `${t("composer.targets")}${mentionPreview.length ? mentionPreview.map((item) => `@${item}`).join(" ") : t("composer.targetsNone")}` : ""}
-        </div>
-        <div className="composer-doc-tools" ref={docPickerRef}>
+    <footer className={["composer", hasMention ? "composer-has-targets" : "", attachedDocument ? "composer-has-doc" : ""].filter(Boolean).join(" ")}>
+      {hasMention || attachedDocument ? (
+        <div className="composer-topline">
+          <div className="composer-targets">
+            {hasMention ? `${t("composer.targets")}${mentionPreview.length ? mentionPreview.map((item) => `@${item}`).join(" ") : t("composer.targetsNone")}` : ""}
+          </div>
           {attachedDocument ? (
             <span className="attachment-chip" title={`${attachedDocument.relativePath}`}>
               <span className="attachment-chip-label">{attachedDocument.name}</span>
@@ -1978,6 +2092,52 @@ const Composer = forwardRef(function Composer({ agents, documents, activeAgentId
               </button>
             </span>
           ) : null}
+        </div>
+      ) : null}
+      <div className="composer-row">
+        <textarea
+          ref={textareaRef}
+          value={value}
+          placeholder={activeAgentId ? t("composer.askAgent", { name: activeAgentDisplayName }) : t("composer.mentionAgent")}
+          onChange={(event) => {
+            setValue(event.target.value);
+            selectionRef.current = {
+              start: event.target.selectionStart,
+              end: event.target.selectionEnd
+            };
+          }}
+          onClick={rememberSelection}
+          onFocus={rememberSelection}
+          onKeyUp={rememberSelection}
+          onSelect={rememberSelection}
+          onCompositionStart={() => {
+            composingRef.current = true;
+          }}
+          onCompositionEnd={() => {
+            composingRef.current = false;
+          }}
+          onKeyDown={(event) => {
+            const composing = event.isComposing ||
+              event.nativeEvent?.isComposing ||
+              event.keyCode === 229 ||
+              event.nativeEvent?.keyCode === 229 ||
+              composingRef.current;
+            if (event.key !== "Enter" || composing) {
+              return;
+            }
+            if (event.ctrlKey || event.metaKey) {
+              event.preventDefault();
+              insertLineBreak(event);
+              return;
+            }
+            if (!event.shiftKey && !event.altKey && !event.metaKey) {
+              event.preventDefault();
+              submit();
+            }
+          }}
+          disabled={sending}
+        />
+        <div className="composer-doc-tools" ref={docPickerRef}>
           <button
             className="attach-doc-button"
             type="button"
@@ -2045,50 +2205,6 @@ const Composer = forwardRef(function Composer({ agents, documents, activeAgentId
             </div>
           ) : null}
         </div>
-      </div>
-      <div className="composer-row">
-        <textarea
-          ref={textareaRef}
-          value={value}
-          placeholder={activeAgentId ? t("composer.askAgent", { name: activeAgentDisplayName }) : t("composer.mentionAgent")}
-          onChange={(event) => {
-            setValue(event.target.value);
-            selectionRef.current = {
-              start: event.target.selectionStart,
-              end: event.target.selectionEnd
-            };
-          }}
-          onClick={rememberSelection}
-          onFocus={rememberSelection}
-          onKeyUp={rememberSelection}
-          onSelect={rememberSelection}
-          onCompositionStart={() => {
-            composingRef.current = true;
-          }}
-          onCompositionEnd={() => {
-            composingRef.current = false;
-          }}
-          onKeyDown={(event) => {
-            const composing = event.isComposing ||
-              event.nativeEvent?.isComposing ||
-              event.keyCode === 229 ||
-              event.nativeEvent?.keyCode === 229 ||
-              composingRef.current;
-            if (event.key !== "Enter" || composing) {
-              return;
-            }
-            if (event.ctrlKey || event.metaKey) {
-              event.preventDefault();
-              insertLineBreak(event);
-              return;
-            }
-            if (!event.shiftKey && !event.altKey && !event.metaKey) {
-              event.preventDefault();
-              submit();
-            }
-          }}
-          disabled={sending}
-        />
         <button
           className="send-button"
           onClick={submit}
@@ -2157,6 +2273,25 @@ function App() {
   const setNotice = useCallback((msg) => {
     pushToast({ level: "error", text: msg });
   }, [pushToast]);
+
+  // Pause a toast's auto-dismiss while the pointer rests on it, so a reader is
+  // never raced by the countdown. Error toasts have no timer (ttl 0) so this is
+  // a no-op for them.
+  const pauseToast = useCallback((id) => {
+    const timer = toastTimersRef.current.get(id);
+    if (timer) {
+      clearTimeout(timer);
+      toastTimersRef.current.delete(id);
+    }
+  }, []);
+
+  // Restart the auto-dismiss countdown (full ttl) when the pointer leaves.
+  const resumeToast = useCallback((id, level) => {
+    const ttl = toastTtl(level);
+    if (ttl <= 0 || toastTimersRef.current.has(id)) return;
+    const timer = setTimeout(() => dismissToast(id), ttl);
+    toastTimersRef.current.set(id, timer);
+  }, [dismissToast]);
   const composerRef = useRef(null);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
     try {
@@ -2689,7 +2824,12 @@ function App() {
       {toasts.length ? (
         <div className="toast-stack" role="region" aria-live="polite">
           {toasts.map((toastItem) => (
-            <div key={toastItem.id} className={`toast toast-${toastItem.level}`}>
+            <div
+              key={toastItem.id}
+              className={`toast toast-${toastItem.level}`}
+              onMouseEnter={() => pauseToast(toastItem.id)}
+              onMouseLeave={() => resumeToast(toastItem.id, toastItem.level)}
+            >
               <span className="toast-glyph" aria-hidden="true">
                 {toastGlyph(toastItem.level)}
               </span>
