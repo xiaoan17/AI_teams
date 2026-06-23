@@ -126,6 +126,13 @@ function buildMenuTemplate(opts = {}) {
       }))
     },
     {
+      label: "语言",
+      submenu: [
+        { id: "lang-zh", label: "中文", click: () => sendCommand("lang:set", "zh") },
+        { id: "lang-en", label: "English", click: () => sendCommand("lang:set", "en") }
+      ]
+    },
+    {
       id: "toggle-effects",
       label: "环境光效",
       click: () => sendCommand("effects:toggle")

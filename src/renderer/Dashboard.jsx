@@ -65,11 +65,11 @@ function KpiCard({ label, value, sub, tone = "", hot = false }) {
   );
 }
 
-function AgentCard({ agent, snapshot, onOpenAgent }) {
+function AgentCard({ agent, snapshot, query, onOpenAgent }) {
   const t = useT();
   const kind = statusKind(agent.status);
   const name = displayName(agent);
-  const tail = snapshot?.tail || "";
+  const queryText = query?.text || t("dashboard.noQuery");
   const doing = snapshot?.doing || t(statusLabelKey(agent.status));
   return (
     <button className={`acard s-${kind}`} type="button" onClick={() => onOpenAgent(agent.id)} title={name}>
@@ -84,8 +84,14 @@ function AgentCard({ agent, snapshot, onOpenAgent }) {
           {t(statusLabelKey(agent.status))}
         </span>
       </div>
-      <div className="a-doing">{doing || "—"}</div>
-      <div className="a-tail">{tail || "—"}</div>
+      <div className="a-status-block">
+        <span>{t("dashboard.lastQuery")}</span>
+        <strong>{queryText}</strong>
+      </div>
+      <div className="a-status-block a-status-doing">
+        <span>{t("dashboard.nowDoing")}</span>
+        <strong>{doing || "—"}</strong>
+      </div>
       <div className="a-foot">
         <span>{agent.taskPath ? agent.taskPath.split("/").pop() : t("dashboard.noTask")}</span>
         <span>{t("dashboard.live")}</span>
@@ -147,7 +153,7 @@ function FeedPanel({ events }) {
   );
 }
 
-export function Dashboard({ agents, events, snapshots, onOpenAgent }) {
+export function Dashboard({ agents, events, snapshots, queries, onOpenAgent }) {
   const t = useT();
   const enabledAgents = useMemo(() => agents.filter((agent) => agent.enabled), [agents]);
   const counts = useMemo(() => enabledAgents.reduce((acc, agent) => {
@@ -176,6 +182,7 @@ export function Dashboard({ agents, events, snapshots, onOpenAgent }) {
                 key={agent.id}
                 agent={agent}
                 snapshot={snapshots[agent.id]}
+                query={queries?.[agent.id]}
                 onOpenAgent={onOpenAgent}
               />
             )) : (

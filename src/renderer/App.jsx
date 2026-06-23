@@ -319,15 +319,39 @@ function staleRouteNotice(value) {
 
 function pickActiveAgentId(agentList, currentId = null, minimized = null) {
   const runningAgents = agentList.filter((agent) => agent.enabled && !stoppedOrExited(agent));
-  const visibleAgents = minimized ? runningAgents.filter((agent) => !minimized.has(agent.id)) : runningAgents;
-  if (currentId && visibleAgents.some((agent) => agent.id === currentId)) {
+  if (currentId && runningAgents.some((agent) => agent.id === currentId)) {
     return currentId;
   }
+  const visibleAgents = minimized ? runningAgents.filter((agent) => !minimized.has(agent.id)) : runningAgents;
   return visibleAgents[0]?.id || null;
+}
+
+function activeAgentStorageKey(workspaceRoot) {
+  return `aiTeams.activeAgent:${workspaceRoot || "default"}`;
 }
 
 function minimizedStorageKey(workspaceRoot) {
   return `aiTeams.minimizedAgents:${workspaceRoot || "default"}`;
+}
+
+function readActiveAgentId(workspaceRoot) {
+  try {
+    return String(window.localStorage?.getItem(activeAgentStorageKey(workspaceRoot)) || "").trim();
+  } catch {
+    return "";
+  }
+}
+
+function writeActiveAgentId(workspaceRoot, agentId) {
+  try {
+    if (agentId) {
+      window.localStorage?.setItem(activeAgentStorageKey(workspaceRoot), agentId);
+    } else {
+      window.localStorage?.removeItem(activeAgentStorageKey(workspaceRoot));
+    }
+  } catch {
+    // Ignore storage failures in restricted browser contexts.
+  }
 }
 
 function readMinimizedAgents(workspaceRoot) {
@@ -455,6 +479,14 @@ function formatDocumentTime(value, t) {
     : { year: "numeric", month: "short", day: "numeric" });
 }
 
+function extractRouteMentions(message) {
+  return [...String(message || "").matchAll(/@ ?([A-Za-z0-9_-]+)/g)].map((match) => match[1]);
+}
+
+function compactRouteQuery(message) {
+  return String(message || "").replace(/@ ?[A-Za-z0-9_-]+/g, "").trim();
+}
+
 function createDashboardEvent(type, kind, text, extra = {}) {
   return {
     id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
@@ -509,6 +541,7 @@ function DocumentTreeNode({
           aria-expanded={expanded}
         >
           <span className="folder-chevron">{hasChildren ? (expanded ? "▾" : "▸") : ""}</span>
+          <span className="folder-icon" aria-hidden="true">{expanded ? "📂" : "📁"}</span>
           <span className="folder-name">{node.name}</span>
           <span className="folder-count">{node.documentCount}</span>
         </button>
@@ -548,6 +581,7 @@ function DocumentTreeNode({
       ].filter(Boolean).join(" ")}
       style={{ "--tree-depth": depth }}
     >
+      <span className="document-icon" aria-hidden="true">📄</span>
       <button className="document-open" type="button" onClick={() => onOpen(node.path)} title={node.relativePath}>
         <span>{node.name}</span>
         <small>
@@ -1596,12 +1630,7 @@ function Sidebar({
   activeAgentId,
   minimizedAgents,
   collapsed,
-  themeId,
-  themes,
-  effectsEnabled,
   handoffPath,
-  onThemeChange,
-  onToggleEffects,
   onToggleCollapsed,
   onSelectAgent,
   onSelectWorkspace,
@@ -1613,13 +1642,10 @@ function Sidebar({
   onAssignRole,
   onAssignType,
   onImportRole,
-  onStartEnabled,
-  onStopEnabled,
   onOpen,
   onInsertDocumentPath
 }) {
   const t = useT();
-  const { locale, setLocale } = useLocale();
   const documentList = documents?.documents || [];
   const documentTree = documents?.tree || null;
   const recentWorkspaces = workspace?.recentWorkspaces || [];
@@ -1697,42 +1723,6 @@ function Sidebar({
             <h1>AI Teams</h1>
           </div>
           <div className="brand-actions">
-            <details className="sidebar-settings">
-              <summary
-                className="sidebar-icon-button"
-                title={t("sidebar.settings")}
-                aria-label={t("sidebar.settings")}
-              >
-                ⚙
-              </summary>
-              <div className="settings-menu">
-                <label className="workspace-picker theme-picker">
-                  <span>{t("sidebar.theme")}</span>
-                  <select value={themeId} onChange={(event) => onThemeChange(event.target.value)}>
-                    {Object.values(themes).map((themeOption) => (
-                      <option key={themeOption.id} value={themeOption.id}>
-                        {themeOption.label}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <label className="workspace-picker theme-picker">
-                  <span>{t("sidebar.language")}</span>
-                  <select value={locale} onChange={(event) => setLocale(event.target.value)}>
-                    <option value="zh">中文</option>
-                    <option value="en">English</option>
-                  </select>
-                </label>
-                <label className="ambient-toggle" title={t("sidebar.effects")}>
-                  <input
-                    type="checkbox"
-                    checked={effectsEnabled}
-                    onChange={(event) => onToggleEffects(event.target.checked)}
-                  />
-                  <span>{t("sidebar.effects")}</span>
-                </label>
-              </div>
-            </details>
             <button
               className="sidebar-icon-button sidebar-toggle"
               type="button"
@@ -1788,11 +1778,6 @@ function Sidebar({
             {collapsed ? "›" : "‹"}
           </button>
         </div>
-      </div>
-
-      <div className="sidebar-bulk-actions" aria-label="Team batch controls">
-        <button type="button" onClick={onStartEnabled}>{t("sidebar.start")}</button>
-        <button type="button" onClick={onStopEnabled}>{t("sidebar.stop")}</button>
       </div>
 
       <section className="panel">
@@ -2056,9 +2041,9 @@ const Composer = forwardRef(function Composer({ agents, documents, activeAgentId
       document.path
     ].some((part) => String(part || "").toLowerCase().includes(query)));
   }, [docQuery, documentList]);
-  const hasMention = useMemo(() => /@ ?[A-Za-z0-9_-]+/.test(value), [value]);
+  const hasMention = useMemo(() => extractRouteMentions(value).length > 0, [value]);
   const mentionPreview = useMemo(() => {
-    const mentions = [...value.matchAll(/@ ?([A-Za-z0-9_-]+)/g)].map((match) => match[1]);
+    const mentions = extractRouteMentions(value);
     const hasAll = mentions.some((m) => m.toLowerCase() === "all");
     if (hasAll) return enabledAgents.map((agent) => agent.id);
     if (mentions.length) return mentions;
@@ -2317,6 +2302,7 @@ const Composer = forwardRef(function Composer({ agents, documents, activeAgentId
 
 function App() {
   const t = useT();
+  const { setLocale } = useLocale();
   const [workspace, setWorkspace] = useState(null);
   const [agents, setAgents] = useState([]);
   const [roles, setRoles] = useState([]);
@@ -2427,10 +2413,17 @@ function App() {
   });
   const [dashboardEvents, setDashboardEvents] = useState([]);
   const [agentSnapshots, setAgentSnapshots] = useState({});
+  const [agentQueries, setAgentQueries] = useState({});
 
   const pushDashboardEvent = useCallback((event) => {
     setDashboardEvents((current) => [event, ...current].slice(0, 50));
   }, []);
+
+  const chooseActiveAgent = useCallback((agentId) => {
+    const nextAgentId = String(agentId || "").trim();
+    setActiveAgentId(nextAgentId || null);
+    writeActiveAgentId(workspaceRoot, nextAgentId);
+  }, [workspaceRoot]);
 
   useEffect(() => {
     try {
@@ -2548,17 +2541,23 @@ function App() {
       const next = dir === "right"
         ? (idx < 0 ? 0 : (idx + 1) % len)
         : (idx < 0 ? len - 1 : (idx - 1 + len) % len);
-      setActiveAgentId(visible[next].id);
+      chooseActiveAgent(visible[next].id);
     };
     document.addEventListener("keydown", onKeyDown, true);
     return () => document.removeEventListener("keydown", onKeyDown, true);
-  }, [agents, activeAgentId, minimizedAgents]);
+  }, [agents, activeAgentId, chooseActiveAgent, minimizedAgents]);
 
   const refreshAgents = useCallback(async () => {
     const nextAgents = await api.listAgents();
     setAgents(nextAgents);
-    setActiveAgentId((current) => pickActiveAgentId(nextAgents, current, minimizedAgentsRef.current));
-  }, []);
+    setActiveAgentId((current) => {
+      const persisted = readActiveAgentId(workspaceRoot);
+      const candidate = current || persisted;
+      const next = pickActiveAgentId(nextAgents, candidate, minimizedAgentsRef.current);
+      if (next !== persisted) writeActiveAgentId(workspaceRoot, next);
+      return next;
+    });
+  }, [workspaceRoot]);
 
   const loadWorkspaceData = useCallback(async () => {
     const [workspaceInfo, documentInfo, agentList, roleList, agentTypeList] = await Promise.all([
@@ -2573,7 +2572,10 @@ function App() {
     setAgents(agentList);
     setRoles(Array.isArray(roleList) ? roleList : []);
     setAgentTypes(Array.isArray(agentTypeList) ? agentTypeList : []);
-    setActiveAgentId(pickActiveAgentId(agentList, null, readMinimizedAgents(workspaceInfo?.root || "")));
+    const nextRoot = workspaceInfo?.root || "";
+    const nextActive = pickActiveAgentId(agentList, readActiveAgentId(nextRoot), readMinimizedAgents(nextRoot));
+    setActiveAgentId(nextActive);
+    writeActiveAgentId(nextRoot, nextActive);
     return { workspaceInfo, documentInfo, agentList, roleList, agentTypeList };
   }, []);
 
@@ -2629,6 +2631,9 @@ function App() {
         case "theme:set":
           if (payload) setThemeId(payload);
           break;
+        case "lang:set":
+          if (payload) setLocale(payload);
+          break;
         case "effects:toggle":
           setEffectsEnabled((current) => !current);
           break;
@@ -2660,7 +2665,7 @@ function App() {
       offDocumentsChanged();
       offMenuCommand();
     };
-  }, [loadWorkspaceData, pushDashboardEvent, refreshDocuments, t]);
+  }, [loadWorkspaceData, pushDashboardEvent, refreshDocuments, setLocale, t]);
 
   useEffect(() => {
     try {
@@ -2671,8 +2676,28 @@ function App() {
   }, [sidebarCollapsed]);
 
   useEffect(() => {
-    setActiveAgentId((current) => pickActiveAgentId(agents, current, minimizedAgents));
-  }, [agents, minimizedAgents]);
+    setActiveAgentId((current) => {
+      const next = pickActiveAgentId(agents, current || readActiveAgentId(workspaceRoot), minimizedAgents);
+      if (next !== current) writeActiveAgentId(workspaceRoot, next);
+      return next;
+    });
+  }, [agents, minimizedAgents, workspaceRoot]);
+
+  useEffect(() => {
+    const validAgentIds = new Set(agents.map((agent) => agent.id));
+    setAgentQueries((current) => {
+      let changed = false;
+      const next = {};
+      for (const [agentId, query] of Object.entries(current)) {
+        if (validAgentIds.has(agentId)) {
+          next[agentId] = query;
+        } else {
+          changed = true;
+        }
+      }
+      return changed ? next : current;
+    });
+  }, [agents]);
 
   useEffect(() => {
     if (workspaceView !== "dashboard") return undefined;
@@ -2718,7 +2743,7 @@ function App() {
       clearMinimized([agentId]);
       const state = await api.startAgent(agentId);
       setAgents((current) => current.map((agent) => (agent.id === agentId ? { ...agent, ...state } : agent)));
-      setActiveAgentId(agentId);
+      chooseActiveAgent(agentId);
     } catch (error) {
       setNotice(error.message);
     }
@@ -2803,6 +2828,21 @@ function App() {
         : targets.length
           ? targets
           : ["@mention"];
+      const realTargets = resolvedTargets.filter((target) => !String(target).startsWith("@"));
+      const latestQuery = compactRouteQuery(message) || message.trim();
+      if (realTargets.length) {
+        chooseActiveAgent(realTargets[0]);
+        setAgentQueries((current) => {
+          const next = { ...current };
+          for (const target of realTargets) {
+            next[target] = {
+              text: latestQuery,
+              time: new Date().toISOString()
+            };
+          }
+          return next;
+        });
+      }
       pushDashboardEvent(createDashboardEvent(
         "route",
         "msg",
@@ -2892,12 +2932,7 @@ function App() {
         activeAgentId={activeAgentId}
         minimizedAgents={minimizedAgents}
         collapsed={sidebarCollapsed}
-        themeId={theme.id}
-        themes={themePresets}
-        effectsEnabled={effectsEnabled}
         handoffPath={taskPath}
-        onThemeChange={setThemeId}
-        onToggleEffects={setEffectsEnabled}
         onToggleCollapsed={() => setSidebarCollapsed((current) => !current)}
         onSelectAgent={(agentId) => {
           const agent = agents.find((item) => item.id === agentId);
@@ -2905,7 +2940,7 @@ function App() {
             if (minimizedAgents.has(agentId)) {
               clearMinimized([agentId]);
             }
-            setActiveAgentId(agentId);
+            chooseActiveAgent(agentId);
           }
         }}
         onSelectWorkspace={selectWorkspace}
@@ -2917,8 +2952,6 @@ function App() {
         onAssignRole={assignRole}
         onAssignType={assignType}
         onImportRole={openRoleConfig}
-        onStartEnabled={startEnabled}
-        onStopEnabled={stopEnabled}
         onOpen={(targetPath) => api.openPath(targetPath)}
         onInsertDocumentPath={insertDocumentPath}
       />
@@ -2937,11 +2970,12 @@ function App() {
             agents={agents}
             events={dashboardEvents}
             snapshots={agentSnapshots}
+            queries={agentQueries}
             onOpenAgent={(agentId) => {
               if (minimizedAgents.has(agentId)) {
                 clearMinimized([agentId]);
               }
-              setActiveAgentId(agentId);
+              chooseActiveAgent(agentId);
               setWorkspaceView("terminal");
             }}
           />
@@ -2962,7 +2996,7 @@ function App() {
                 active={activeAgentId === agent.id}
                 hidden={minimizedAgents.has(agent.id)}
                 terminalTheme={theme.terminal}
-                onFocus={() => setActiveAgentId(agent.id)}
+                onFocus={() => chooseActiveAgent(agent.id)}
                 onNotice={setNotice}
                 onStop={() => stopAgent(agent.id)}
                 onToggleMinimize={() => toggleAgentMinimized(agent.id)}

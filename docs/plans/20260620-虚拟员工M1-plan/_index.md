@@ -3,7 +3,7 @@ created: 2026-06-20
 plan: 虚拟员工 M1 —— Role schema + 全局库 + 雇佣 + 注入启动 + 组队选择
 branch: feature/loop_test
 design: ../../20260620-虚拟员工与团队工作室-设计讨论.md
-status: ready-for-execution
+status: done   # M1 全部任务已落地：role schema + 全局库 + hire + 注入启动 + 组队选择（下游 M2 已 done，.aiteam/crew/ 实例为证）
 ---
 
 # 施工计划：虚拟员工 M1（可分布式认领）
