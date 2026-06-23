@@ -31,6 +31,7 @@ const zh = {
   // workspace view + theme
   "view.terminal": "终端",
   "view.dashboard": "中控台",
+  "view.config": "项目配置",
   "theme.toggleToLight": "切换到浅色",
   "theme.toggleToDark": "切换到深色",
 
@@ -179,6 +180,7 @@ const en = {
   // workspace view + theme
   "view.terminal": "Terminal",
   "view.dashboard": "Dashboard",
+  "view.config": "Project Config",
   "theme.toggleToLight": "Switch to light",
   "theme.toggleToDark": "Switch to dark",
 

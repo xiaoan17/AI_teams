@@ -20,6 +20,8 @@ const {
 const { resolveRuntime, runtimeFamilyList } = require("./role-runtime.cjs");
 const { killProcessTree } = require("./process-tree.cjs");
 const { TMUX_SUBMIT_KEY, tmuxInputActions, writeInputActions } = require("./tmux-input.cjs");
+const { resolveMentionTargets, routeTargetUnavailable } = require("./route-targets.cjs");
+const { migrateLegacyAgentIds, migrateRuntimeAgentIds } = require("./agent-id-migration.cjs");
 const { initLogger, scoped, getLogsDir } = require("./logger.cjs");
 const { installMenu } = require("./app-menu.cjs");
 
@@ -534,7 +536,7 @@ function workspaceSessionName(root) {
 }
 
 function defaultAppAgentConfig() {
-  return {
+  return migrateLegacyAgentIds({
     config_schema_version: 1,
     routing: {
       default_agent: "codex",
@@ -548,7 +550,7 @@ function defaultAppAgentConfig() {
     // (versionArgs/docUrl) via presetToAgentTemplate. Keeps codex/claude/kimi
     // command+args+provider from drifting between the two definitions.
     agents: builtinAgentPresets().map((preset) => agentDetect.presetToAgentTemplate(preset))
-  };
+  });
 }
 
 function isLegacyDefaultAgentConfig(config) {
@@ -570,7 +572,8 @@ function isLegacyDefaultAgentConfig(config) {
 
 function normalizeAgentConfig(config, sourceRoot = null) {
   const defaults = defaultAppAgentConfig();
-  const sourceAgents = Array.isArray(config?.agents) && config.agents.length ? config.agents : defaults.agents;
+  const migratedConfig = migrateLegacyAgentIds(config);
+  const sourceAgents = Array.isArray(migratedConfig?.agents) && migratedConfig.agents.length ? migratedConfig.agents : defaults.agents;
   const seen = new Set();
   const agents = sourceAgents.map((agent) => {
     const id = String(agent?.id || "").trim();
@@ -601,7 +604,7 @@ function normalizeAgentConfig(config, sourceRoot = null) {
   }).filter(Boolean);
   const routing = {
     ...defaults.routing,
-    ...(config?.routing && typeof config.routing === "object" ? config.routing : {})
+    ...(migratedConfig?.routing && typeof migratedConfig.routing === "object" ? migratedConfig.routing : {})
   };
   const defaultAgentIsUsable = routing.default_agent
     && agents.some((agent) => agent.id === routing.default_agent && agent.enabled !== false);
@@ -610,10 +613,10 @@ function normalizeAgentConfig(config, sourceRoot = null) {
   }
 
   return {
-    ...(config && typeof config === "object" ? config : {}),
+    ...(migratedConfig && typeof migratedConfig === "object" ? migratedConfig : {}),
     config_schema_version: 1,
     routing,
-    handoff_template: config?.handoff_template || defaults.handoff_template,
+    handoff_template: migratedConfig?.handoff_template || defaults.handoff_template,
     agents
   };
 }
@@ -1921,6 +1924,14 @@ function loadConfig() {
   return withWorkspaceContext(agentConfig);
 }
 
+function loadRuntimeConfigForMigration() {
+  try {
+    return loadConfig();
+  } catch (_error) {
+    return null;
+  }
+}
+
 function shellCommand(agent) {
   const args = Array.isArray(agent.args) ? agent.args : [];
   return [agent.command, ...args].filter(Boolean).join(" ");
@@ -2303,7 +2314,13 @@ function runtimeSession(config = loadConfig()) {
 }
 
 function readRuntime() {
-  return readJson(RUNTIME_PATH, {});
+  const runtime = readJson(RUNTIME_PATH, {});
+  const config = loadRuntimeConfigForMigration();
+  const migrated = migrateRuntimeAgentIds(runtime, config?.agents || []);
+  if (migrated.changed) {
+    saveRuntime(migrated.runtime);
+  }
+  return migrated.runtime;
 }
 
 function saveRuntime(runtime) {
@@ -3695,23 +3712,29 @@ function routeTargets(message, explicitTargets = []) {
   const config = loadConfig();
   const enabledList = config.agents.filter((agent) => agent.enabled !== false);
   const enabledSet = new Set(enabledList.map((agent) => agent.id));
+  let activeList = enabledList;
+  try {
+    const states = listAgentStates();
+    if (Array.isArray(states)) {
+      activeList = states.filter((agent) => agent.enabled !== false && !routeTargetUnavailable(agent));
+    }
+  } catch (error) {
+    log.warn("failed to load active route targets; falling back to enabled config order", { error });
+  }
   let targets = explicitTargets;
   let routedMessage = message;
   if (!targets.length) {
     mentionPattern.lastIndex = 0;
     const mentions = [...message.matchAll(mentionPattern)].map((match) => match[1]);
-    const hasAll = mentions.some((mention) => mention.toLowerCase() === "all");
-    if (hasAll) {
-      targets = enabledList.map((agent) => agent.id);
-    } else if (mentions.length) {
-      const seen = new Set();
-      targets = mentions.filter((id) => {
-        if (seen.has(id)) return false;
-        seen.add(id);
-        return true;
-      });
+    if (mentions.length) {
+      const resolved = resolveMentionTargets(mentions, activeList);
+      targets = resolved.targets;
+      const invalid = resolved.invalid;
+      if (invalid.length) {
+        throw new Error(`Unknown, stopped, or out-of-range agent target(s): ${invalid.join(", ")}`);
+      }
     } else {
-      targets = [config.routing?.default_agent || enabledList[0]?.id].filter(Boolean);
+      targets = [config.routing?.default_agent || activeList[0]?.id || enabledList[0]?.id].filter(Boolean);
     }
     if (mentions.length) {
       routedMessage = message.replace(mentionPattern, "").trim();

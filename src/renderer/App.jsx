@@ -284,13 +284,13 @@ function stoppedOrExited(agent) {
 }
 
 function agentDisplayName(agent) {
-  // `name` is the single source of truth for the display label (role schema
-  // direction A: no separate title, no emoji/badge prefix). Fall back to id.
-  return String(agent?.name || agent?.id || "").trim();
+  // Stable role id is the primary label. Human-readable role names remain
+  // metadata, while panes/routes/tmux windows all use the same id vocabulary.
+  return String(agent?.id || agent?.name || "").trim();
 }
 
 function agentPanelTitle(agent) {
-  // Panel title is "DisplayName + Runtime" (e.g. "技术负责人 + Claude").
+  // Panel title is "stable-id + Runtime" (e.g. "manager + Kimi").
   // agentRuntimeLabel returns the bare runtime, so the two never duplicate;
   // if they happen to coincide (display name IS the runtime), show one.
   const display = agentDisplayName(agent);
@@ -479,12 +479,67 @@ function formatDocumentTime(value, t) {
     : { year: "numeric", month: "short", day: "numeric" });
 }
 
+const ROUTE_MENTION_PATTERN = /@ ?([A-Za-z0-9_-]+)/g;
+
 function extractRouteMentions(message) {
-  return [...String(message || "").matchAll(/@ ?([A-Za-z0-9_-]+)/g)].map((match) => match[1]);
+  return [...String(message || "").matchAll(ROUTE_MENTION_PATTERN)].map((match) => match[1]);
+}
+
+function routeMentionIndex(token) {
+  return /^[1-9]\d*$/.test(token) ? Number(token) - 1 : -1;
+}
+
+function resolveRouteMentions(message, agents) {
+  const mentions = extractRouteMentions(message);
+  if (!mentions.length) {
+    return { mentions, targets: [], invalid: [] };
+  }
+  const agentList = Array.isArray(agents) ? agents : [];
+  const agentIds = new Set(agentList.map((agent) => agent.id));
+  const seen = new Set();
+  const targets = [];
+  const invalid = [];
+
+  const addTarget = (id) => {
+    if (!seen.has(id)) {
+      seen.add(id);
+      targets.push(id);
+    }
+  };
+
+  for (const mention of mentions) {
+    if (mention.toLowerCase() === "all") {
+      for (const agent of agentList) {
+        addTarget(agent.id);
+      }
+      continue;
+    }
+    const index = routeMentionIndex(mention);
+    if (index >= 0) {
+      const agent = agentList[index];
+      if (agent) {
+        addTarget(agent.id);
+      } else {
+        invalid.push(mention);
+      }
+      continue;
+    }
+    if (agentIds.has(mention)) {
+      addTarget(mention);
+    } else {
+      invalid.push(mention);
+    }
+  }
+
+  return { mentions, targets, invalid };
+}
+
+function routeTargetDisplayLabel(targetId, agents) {
+  return `@${targetId}`;
 }
 
 function compactRouteQuery(message) {
-  return String(message || "").replace(/@ ?[A-Za-z0-9_-]+/g, "").trim();
+  return String(message || "").replace(ROUTE_MENTION_PATTERN, "").trim();
 }
 
 function createDashboardEvent(type, kind, text, extra = {}) {
@@ -498,11 +553,42 @@ function createDashboardEvent(type, kind, text, extra = {}) {
   };
 }
 
+function normalizeSnapshotLine(line) {
+  return String(line || "")
+    .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "")
+    .replace(/[\u2500-\u257f]/g, " ")
+    .replace(/[╭╮╰╯│]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function isDashboardSummaryNoise(line) {
+  const lower = line.toLowerCase();
+  return !line
+    || /^[>›❯$#]+\s*$/.test(line)
+    || /^context:\s*\d/.test(lower)
+    || lower.includes("bypass permissions")
+    || lower.includes("shift+tab")
+    || lower.includes("ctrl+r")
+    || lower.includes("esc to interrupt")
+    || lower.includes("token")
+    || lower.includes("tokens")
+    || lower.includes("cwd:")
+    || lower.includes("working directory");
+}
+
 function extractSnapshotSummary(snapshot) {
   const text = String(snapshot?.data || "");
-  const lines = text.split(/\r?\n/).map((line) => line.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "").trim()).filter(Boolean);
-  const tail = lines.at(-1) || "";
-  return { doing: tail, tail };
+  const lines = text.split(/\r?\n/).map(normalizeSnapshotLine).filter(Boolean);
+  const meaningful = [];
+  for (const line of lines.slice(-24).reverse()) {
+    if (isDashboardSummaryNoise(line)) continue;
+    if (meaningful.includes(line)) continue;
+    meaningful.unshift(line);
+    if (meaningful.length >= 3) break;
+  }
+  const summary = meaningful.join("\n") || lines.filter((line) => !isDashboardSummaryNoise(line)).at(-1) || "";
+  return { doing: summary, tail: lines.at(-1) || "" };
 }
 
 function agentStatusKind(status) {
@@ -1621,35 +1707,9 @@ function RoleConfigModal({ api, roles, onClose, onRolesChanged }) {
   );
 }
 
-function Sidebar({
-  workspace,
-  agents,
-  roles,
-  agentTypes,
-  documents,
-  activeAgentId,
-  minimizedAgents,
-  collapsed,
-  handoffPath,
-  onToggleCollapsed,
-  onSelectAgent,
-  onSelectWorkspace,
-  onChooseWorkspace,
-  onToggleDocumentPinned,
-  onStart,
-  onStop,
-  onToggleMinimize,
-  onAssignRole,
-  onAssignType,
-  onImportRole,
-  onOpen,
-  onInsertDocumentPath
-}) {
-  const t = useT();
+function useDocumentPanelState(documents, handoffPath) {
   const documentList = documents?.documents || [];
   const documentTree = documents?.tree || null;
-  const recentWorkspaces = workspace?.recentWorkspaces || [];
-  const recentWorkspaceOptions = recentWorkspaces.filter((item) => item.root !== workspace?.root);
   const [documentSearch, setDocumentSearch] = useState("");
   const [documentFieldFilter, setDocumentFieldFilter] = useState("all");
   const [expandedFolders, setExpandedFolders] = useState(() => defaultExpandedFolders(documentList));
@@ -1675,8 +1735,6 @@ function Sidebar({
     });
   }, [documentList]);
 
-  // Keep the handoff document's row reachable: expand its ancestor folders
-  // whenever a document is armed in the composer.
   const handoffDocument = useMemo(
     () => (handoffPath ? documentList.find((document) => document.path === handoffPath) || null : null),
     [documentList, handoffPath]
@@ -1712,30 +1770,126 @@ function Sidebar({
     });
   }, []);
 
+  return {
+    documentList,
+    documentSearch,
+    documentFieldFilter,
+    expandedFolders,
+    filteredTree,
+    filteredDocumentCount,
+    hasDocumentFilter,
+    setDocumentSearch,
+    setDocumentFieldFilter,
+    toggleFolder
+  };
+}
+
+function DocumentsRail({
+  documents,
+  handoffPath,
+  onToggleDocumentPinned,
+  onOpen,
+  onInsertDocumentPath
+}) {
+  const t = useT();
+  const {
+    documentList,
+    documentSearch,
+    documentFieldFilter,
+    expandedFolders,
+    filteredTree,
+    filteredDocumentCount,
+    hasDocumentFilter,
+    setDocumentSearch,
+    setDocumentFieldFilter,
+    toggleFolder
+  } = useDocumentPanelState(documents, handoffPath);
+
   return (
-    <aside className={`sidebar ${collapsed ? "sidebar-collapsed" : ""}`}>
-      <div className="brand">
-        <div className="brand-top">
+    <aside className="documents-rail">
+      <section className="panel-card document-rail-card">
+        <header className="panel-card-head">
+          <h2>{t("sidebar.docs")}</h2>
+          <span>{hasDocumentFilter ? `${filteredDocumentCount}/${documentList.length}` : documentList.length}</span>
+        </header>
+        <div className="document-rail-body">
+          <label className="document-search">
+            <span>{t("sidebar.searchDocs")}</span>
+            <input
+              type="search"
+              value={documentSearch}
+              placeholder={t("sidebar.searchDocs")}
+              onChange={(event) => setDocumentSearch(event.target.value)}
+            />
+            <select
+              value={documentFieldFilter}
+              aria-label="Filter docs"
+              onChange={(event) => setDocumentFieldFilter(event.target.value)}
+            >
+              {documentFieldFilters.map((filter) => (
+                <option key={filter.id} value={filter.id}>{t(filter.labelKey)}</option>
+              ))}
+            </select>
+          </label>
+          <div className="document-tree" role="tree" aria-label="Project docs">
+            {filteredTree ? (
+              <DocumentTreeNode
+                node={filteredTree}
+                expandedFolders={expandedFolders}
+                forceExpanded={hasDocumentFilter}
+                handoffPath={handoffPath}
+                showPath={hasDocumentFilter}
+                onToggleFolder={toggleFolder}
+                onOpen={onOpen}
+                onInsertDocumentPath={onInsertDocumentPath}
+                onToggleDocumentPinned={onToggleDocumentPinned}
+              />
+            ) : (
+              <div className="document-empty">{hasDocumentFilter ? t("sidebar.noMatchingDocs") : t("sidebar.noDocs")}</div>
+            )}
+          </div>
+        </div>
+      </section>
+    </aside>
+  );
+}
+
+function ProjectConfigView({
+  workspace,
+  agents,
+  roles,
+  agentTypes,
+  activeAgentId,
+  minimizedAgents,
+  onSelectAgent,
+  onSelectWorkspace,
+  onChooseWorkspace,
+  onStart,
+  onStop,
+  onToggleMinimize,
+  onAssignRole,
+  onAssignType,
+  onImportRole
+}) {
+  const t = useT();
+  const recentWorkspaces = workspace?.recentWorkspaces || [];
+  const recentWorkspaceOptions = recentWorkspaces.filter((item) => item.root !== workspace?.root);
+
+  return (
+    <section className="config-workspace">
+      <section className="panel-card config-card project-card">
+        <header className="panel-card-head">
+          <h2>{t("sidebar.project")}</h2>
+          <span>{workspace?.name || t("sidebar.chooseProject")}</span>
+        </header>
+        <div className="config-card-body project-config-body">
           <div className="brand-mark">
             <img src={aiTeamsAppIcon} alt="" aria-hidden="true" />
           </div>
-          <div className="brand-copy">
+          <div className="project-config-copy">
             <h1>AI Teams</h1>
+            <p>{workspace?.root || ""}</p>
           </div>
-          <div className="brand-actions">
-            <button
-              className="sidebar-icon-button sidebar-toggle"
-              type="button"
-              title={collapsed ? t("sidebar.expandSidebar") : t("sidebar.collapseSidebar")}
-              aria-label={collapsed ? t("sidebar.expandSidebar") : t("sidebar.collapseSidebar")}
-              onClick={onToggleCollapsed}
-            >
-              {collapsed ? "›" : "‹"}
-            </button>
-          </div>
-        </div>
-        <div className="workspace-control">
-          <div className="workspace-label">{t("sidebar.project")}</div>
           <button
             className="workspace-current"
             type="button"
@@ -1761,28 +1915,11 @@ function Sidebar({
             </select>
           </label>
         </div>
-      </div>
+      </section>
 
-      <div className="collapsed-brand">
-        <div className="brand-mark">
-          <img src={aiTeamsAppIcon} alt="" aria-hidden="true" />
-        </div>
-        <div className="brand-actions">
-          <button
-            className="sidebar-icon-button sidebar-toggle"
-            type="button"
-            title={collapsed ? t("sidebar.expandSidebar") : t("sidebar.collapseSidebar")}
-            aria-label={collapsed ? t("sidebar.expandSidebar") : t("sidebar.collapseSidebar")}
-            onClick={onToggleCollapsed}
-          >
-            {collapsed ? "›" : "‹"}
-          </button>
-        </div>
-      </div>
-
-      <section className="panel">
-        <div className="panel-heading">
-          <div className="panel-title">{t("sidebar.team")}</div>
+      <section className="panel-card config-card team-config-card">
+        <header className="panel-card-head">
+          <h2>{t("sidebar.team")}</h2>
           {onImportRole ? (
             <button
               type="button"
@@ -1793,8 +1930,8 @@ function Sidebar({
               {t("sidebar.configAgent")}
             </button>
           ) : null}
-        </div>
-        <div className="agent-list">
+        </header>
+        <div className="config-card-body agent-list config-agent-list">
         {agents.map((agent) => {
           const minimized = agent.enabled && !stoppedOrExited(agent) && minimizedAgents?.has(agent.id);
           const displayName = agentDisplayName(agent);
@@ -1916,49 +2053,7 @@ function Sidebar({
         })}
         </div>
       </section>
-
-      <section className="panel">
-        <div className="panel-heading">
-          <div className="panel-title">{t("sidebar.docs")}</div>
-          <span>{hasDocumentFilter ? `${filteredDocumentCount}/${documentList.length}` : documentList.length}</span>
-        </div>
-        <label className="document-search">
-          <span>{t("sidebar.searchDocs")}</span>
-          <input
-            type="search"
-            value={documentSearch}
-            placeholder={t("sidebar.searchDocs")}
-            onChange={(event) => setDocumentSearch(event.target.value)}
-          />
-          <select
-            value={documentFieldFilter}
-            aria-label="Filter docs"
-            onChange={(event) => setDocumentFieldFilter(event.target.value)}
-          >
-            {documentFieldFilters.map((filter) => (
-              <option key={filter.id} value={filter.id}>{t(filter.labelKey)}</option>
-            ))}
-          </select>
-        </label>
-        <div className="document-tree" role="tree" aria-label="Project docs">
-          {filteredTree ? (
-            <DocumentTreeNode
-              node={filteredTree}
-              expandedFolders={expandedFolders}
-              forceExpanded={hasDocumentFilter}
-              handoffPath={handoffPath}
-              showPath={hasDocumentFilter}
-              onToggleFolder={toggleFolder}
-              onOpen={onOpen}
-              onInsertDocumentPath={onInsertDocumentPath}
-              onToggleDocumentPinned={onToggleDocumentPinned}
-            />
-          ) : (
-            <div className="document-empty">{hasDocumentFilter ? t("sidebar.noMatchingDocs") : t("sidebar.noDocs")}</div>
-          )}
-        </div>
-      </section>
-    </aside>
+    </section>
   );
 }
 
@@ -1994,6 +2089,15 @@ function WorkspaceTopbar({
           onClick={() => onViewChange("dashboard")}
         >
           {t("view.dashboard")}
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={view === "config"}
+          className={["seg", view === "config" ? "on" : ""].filter(Boolean).join(" ")}
+          onClick={() => onViewChange("config")}
+        >
+          {t("view.config")}
         </button>
       </div>
       <div className="topbar-actions">
@@ -2041,16 +2145,19 @@ const Composer = forwardRef(function Composer({ agents, documents, activeAgentId
       document.path
     ].some((part) => String(part || "").toLowerCase().includes(query)));
   }, [docQuery, documentList]);
-  const hasMention = useMemo(() => extractRouteMentions(value).length > 0, [value]);
-  const mentionPreview = useMemo(() => {
-    const mentions = extractRouteMentions(value);
-    const hasAll = mentions.some((m) => m.toLowerCase() === "all");
-    if (hasAll) return enabledAgents.map((agent) => agent.id);
-    if (mentions.length) return mentions;
-    return activeAgentId ? [activeAgentId] : [];
-  }, [activeAgentId, enabledAgents, value]);
+  const routeMentionState = useMemo(() => resolveRouteMentions(value, enabledAgents), [enabledAgents, value]);
+  const hasMention = routeMentionState.mentions.length > 0;
+  const mentionPreview = hasMention
+    ? routeMentionState.targets
+    : activeAgentId ? [activeAgentId] : [];
+  const mentionPreviewLabel = mentionPreview.length
+    ? mentionPreview.map((target) => routeTargetDisplayLabel(target, enabledAgents)).join(" ")
+    : "";
   const hasRouteTarget = hasMention || Boolean(activeAgentId);
-  const canSubmit = Boolean(value.trim()) && !sending && hasRouteTarget;
+  const canSubmit = Boolean(value.trim()) &&
+    !sending &&
+    hasRouteTarget &&
+    (!hasMention || (routeMentionState.targets.length > 0 && routeMentionState.invalid.length === 0));
 
   const submit = useCallback(async () => {
     const trimmed = value.trim();
@@ -2278,11 +2385,11 @@ const Composer = forwardRef(function Composer({ agents, documents, activeAgentId
                 </button>
               </span>
             ) : null}
-            <span className="target-chip" title={hasMention ? mentionPreview.map((item) => `@${item}`).join(" ") : activeAgentDisplayName}>
+            <span className="target-chip" title={mentionPreviewLabel || activeAgentDisplayName}>
               <i />
               {hasMention
-                ? `${t("composer.targets")}${mentionPreview.length ? mentionPreview.map((item) => `@${item}`).join(" ") : t("composer.targetsNone")}`
-                : activeAgentDisplayName ? `@${activeAgentDisplayName}` : t("composer.targetsNone")}
+                ? `${t("composer.targets")}${mentionPreviewLabel || t("composer.targetsNone")}`
+                : mentionPreviewLabel || (activeAgentDisplayName ? `@${activeAgentDisplayName}` : t("composer.targetsNone"))}
             </span>
           </div>
           <div className="composer-hint">{t("composer.hint")}</div>
@@ -2376,13 +2483,6 @@ function App() {
     toastTimersRef.current.set(id, timer);
   }, [dismissToast]);
   const composerRef = useRef(null);
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
-    try {
-      return window.localStorage?.getItem("aiTeams.sidebarCollapsed") === "true";
-    } catch {
-      return false;
-    }
-  });
   const [minimizedAgents, setMinimizedAgents] = useState(() => new Set());
   const minimizedReadyRootRef = useRef(null);
   const minimizedAgentsRef = useRef(minimizedAgents);
@@ -2406,7 +2506,8 @@ function App() {
   const [taskPath, setTaskPath] = useState("");
   const [workspaceView, setWorkspaceView] = useState(() => {
     try {
-      return window.localStorage?.getItem("aiTeams.workspaceView") === "dashboard" ? "dashboard" : "terminal";
+      const stored = window.localStorage?.getItem("aiTeams.workspaceView");
+      return stored === "dashboard" || stored === "config" ? stored : "terminal";
     } catch {
       return "terminal";
     }
@@ -2626,7 +2727,7 @@ function App() {
     const offMenuCommand = api.onMenuCommand?.(({ id, payload } = {}) => {
       switch (id) {
         case "sidebar:toggle":
-          setSidebarCollapsed((current) => !current);
+          setWorkspaceView("config");
           break;
         case "theme:set":
           if (payload) setThemeId(payload);
@@ -2666,14 +2767,6 @@ function App() {
       offMenuCommand();
     };
   }, [loadWorkspaceData, pushDashboardEvent, refreshDocuments, setLocale, t]);
-
-  useEffect(() => {
-    try {
-      window.localStorage?.setItem("aiTeams.sidebarCollapsed", sidebarCollapsed ? "true" : "false");
-    } catch {
-      // Ignore storage failures in restricted browser contexts.
-    }
-  }, [sidebarCollapsed]);
 
   useEffect(() => {
     setActiveAgentId((current) => {
@@ -2917,44 +3010,11 @@ function App() {
     <div
       className={[
         "app-shell",
-        sidebarCollapsed ? "app-shell-sidebar-collapsed" : "",
         effectsEnabled ? "effects-on" : ""
       ].filter(Boolean).join(" ")}
       data-theme={theme.id}
       style={{ ...themeCssVars, colorScheme: theme.colorScheme }}
     >
-      <Sidebar
-        workspace={workspace}
-        agents={agents}
-        roles={roles}
-        agentTypes={agentTypes}
-        documents={documents}
-        activeAgentId={activeAgentId}
-        minimizedAgents={minimizedAgents}
-        collapsed={sidebarCollapsed}
-        handoffPath={taskPath}
-        onToggleCollapsed={() => setSidebarCollapsed((current) => !current)}
-        onSelectAgent={(agentId) => {
-          const agent = agents.find((item) => item.id === agentId);
-          if (agent && !stoppedOrExited(agent)) {
-            if (minimizedAgents.has(agentId)) {
-              clearMinimized([agentId]);
-            }
-            chooseActiveAgent(agentId);
-          }
-        }}
-        onSelectWorkspace={selectWorkspace}
-        onChooseWorkspace={chooseWorkspace}
-        onToggleDocumentPinned={toggleDocumentPinned}
-        onStart={startAgent}
-        onStop={stopAgent}
-        onToggleMinimize={toggleAgentMinimized}
-        onAssignRole={assignRole}
-        onAssignType={assignType}
-        onImportRole={openRoleConfig}
-        onOpen={(targetPath) => api.openPath(targetPath)}
-        onInsertDocumentPath={insertDocumentPath}
-      />
       <main className="workspace">
         <WorkspaceTopbar
           view={workspaceView}
@@ -2965,7 +3025,34 @@ function App() {
           onStartEnabled={startEnabled}
           onStopEnabled={stopEnabled}
         />
-        {workspaceView === "dashboard" ? (
+        {workspaceView === "config" ? (
+          <ProjectConfigView
+            workspace={workspace}
+            agents={agents}
+            roles={roles}
+            agentTypes={agentTypes}
+            activeAgentId={activeAgentId}
+            minimizedAgents={minimizedAgents}
+            onSelectAgent={(agentId) => {
+              const agent = agents.find((item) => item.id === agentId);
+              if (agent && !stoppedOrExited(agent)) {
+                if (minimizedAgents.has(agentId)) {
+                  clearMinimized([agentId]);
+                }
+                chooseActiveAgent(agentId);
+                setWorkspaceView("terminal");
+              }
+            }}
+            onSelectWorkspace={selectWorkspace}
+            onChooseWorkspace={chooseWorkspace}
+            onStart={startAgent}
+            onStop={stopAgent}
+            onToggleMinimize={toggleAgentMinimized}
+            onAssignRole={assignRole}
+            onAssignType={assignType}
+            onImportRole={openRoleConfig}
+          />
+        ) : workspaceView === "dashboard" ? (
           <Dashboard
             agents={agents}
             events={dashboardEvents}
@@ -3036,6 +3123,13 @@ function App() {
           onRoute={route}
         />
       </main>
+      <DocumentsRail
+        documents={documents}
+        handoffPath={taskPath}
+        onToggleDocumentPinned={toggleDocumentPinned}
+        onOpen={(targetPath) => api.openPath(targetPath)}
+        onInsertDocumentPath={insertDocumentPath}
+      />
       {roleConfigOpen ? (
         <RoleConfigModal
           api={api}
