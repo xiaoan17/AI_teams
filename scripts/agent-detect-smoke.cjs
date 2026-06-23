@@ -29,6 +29,14 @@ assert.strictEqual(template.id, "claude");
 assert.strictEqual(template.provider, "anthropic");
 assert.strictEqual(template.versionArgs, undefined, "versionArgs must not leak into config");
 assert.strictEqual(template.docUrl, undefined, "docUrl must not leak into config");
+// defaultAppAgentConfig() derives its seeded agents by mapping builtinAgentPresets()
+// through presetToAgentTemplate (single source of truth), so the config-bearing
+// fields must survive the strip — otherwise the derived default config loses them.
+assert.strictEqual(template.command, "claude");
+assert.deepStrictEqual(template.args, []);
+assert.strictEqual(template.cwd, ".");
+assert.strictEqual(template.enabled, true);
+assert.strictEqual(template.permission_mode, "configure-before-start");
 
 // --- extractVersionString --------------------------------------------------------------
 assert.strictEqual(extractVersionString("claude version 1.2.3 (build x)"), "1.2.3");

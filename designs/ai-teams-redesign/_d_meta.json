@@ -1,0 +1,18 @@
+{
+  "type": "design",
+  "designSystems": [],
+  "primaryDesignSystem": null,
+  "assets": {
+    "AI Teams Redesign": {
+      "versions": [
+        {
+          "path": "AI Teams Redesign.html",
+          "createdAt": "2026-06-23T03:11:33.459Z",
+          "status": "needs-review"
+        }
+      ]
+    }
+  },
+  "createdAt": "2026-06-23T03:11:33.464Z",
+  "updatedAt": "2026-06-23T04:19:20.211Z"
+}

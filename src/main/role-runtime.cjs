@@ -60,7 +60,11 @@ function resolveRuntime(source = {}, runtimeName) {
       command: String(rt.command || fallback.command),
       args: asArray(rt.args),
       instructionsFile: String(rt.instructions_file || source.persona_file || fallback.instructionsFile),
-      skillsDir: String(rt.skills_dir || fallback.skillsDir)
+      skillsDir: String(rt.skills_dir || fallback.skillsDir),
+      // Per-runtime model. Each CLI has its own alias space (claude=opus,
+      // codex=gpt-5.2, kimi=kimi-k2), so model lives inside each runtime block.
+      // Empty string means "don't inject" — fall back to the CLI's own default.
+      model: typeof rt.model === "string" ? rt.model.trim() : ""
     };
   }
 
@@ -77,7 +81,11 @@ function resolveRuntime(source = {}, runtimeName) {
       || (isCodex ? "RTK.md" : source.persona_file)
       || fallback.instructionsFile
     ),
-    skillsDir: fallback.skillsDir
+    skillsDir: fallback.skillsDir,
+    // Legacy top-level `model` was a single string historically meaning the
+    // Claude alias (e.g. "opus"). Only honor it for the claude runtime; other
+    // families must not inherit a claude-only alias (it would crash codex/kimi).
+    model: runtime === "claude" && typeof source.model === "string" ? source.model.trim() : ""
   };
 }
 

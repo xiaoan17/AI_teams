@@ -459,6 +459,23 @@ function normalizeClaudeAgent(agent) {
   };
 }
 
+// Default the Kimi agent to `-y` (yolo: auto-approve all actions), mirroring the
+// claude --dangerously-skip-permissions default. Same auto-upgrade rationale as
+// normalizeClaudeAgent: an older agents.json with Kimi `args: []` gets the flag
+// injected on load. mergeArgs dedupes, so a config that already has -y (or other
+// user flags) is preserved untouched.
+function normalizeKimiAgent(agent) {
+  const commandName = path.basename(String(agent?.command || "").trim());
+  if (commandName !== "kimi") {
+    return agent;
+  }
+  const args = Array.isArray(agent.args) ? agent.args : [];
+  return {
+    ...agent,
+    args: mergeArgs(args, ["-y"])
+  };
+}
+
 function resolveExecutableCommand(command) {
   const value = String(command || "").trim();
   if (!value) {
@@ -526,35 +543,11 @@ function defaultAppAgentConfig() {
       submit_delay_ms: 80
     },
     handoff_template: "请先阅读任务文档：{task_doc}；按文档中的目标、约束和产出路径工作，长上下文以文件内容为准。",
-    agents: [
-      {
-        id: "codex",
-        name: "Codex",
-        command: "codex",
-        args: mergeArgs(["--no-alt-screen"], defaultCodexArgs()),
-        cwd: ".",
-        enabled: true,
-        permission_mode: "configure-before-start"
-      },
-      {
-        id: "claude",
-        name: "Claude Code",
-        command: "claude",
-        args: ["--dangerously-skip-permissions"],
-        cwd: ".",
-        enabled: true,
-        permission_mode: "configure-before-start"
-      },
-      {
-        id: "kimi",
-        name: "Kimi",
-        command: "kimi",
-        args: [],
-        cwd: ".",
-        enabled: true,
-        permission_mode: "configure-before-start"
-      }
-    ]
+    // Single source of truth: derive the seeded agents from the same presets the
+    // health page / detection use, stripping detection-only metadata
+    // (versionArgs/docUrl) via presetToAgentTemplate. Keeps codex/claude/kimi
+    // command+args+provider from drifting between the two definitions.
+    agents: builtinAgentPresets().map((preset) => agentDetect.presetToAgentTemplate(preset))
   };
 }
 
@@ -604,7 +597,7 @@ function normalizeAgentConfig(config, sourceRoot = null) {
     ) {
       next.cwd = ".";
     }
-    return normalizeClaudeAgent(normalizeCodexAgent(next));
+    return normalizeKimiAgent(normalizeClaudeAgent(normalizeCodexAgent(next)));
   }).filter(Boolean);
   const routing = {
     ...defaults.routing,
@@ -730,7 +723,7 @@ function builtinAgentPresets() {
   return [
     { id: "codex", name: "Codex", command: "codex", args: mergeArgs(["--no-alt-screen"], defaultCodexArgs()), cwd: ".", enabled: true, provider: "openai", permission_mode: "configure-before-start", versionArgs: ["--version"], docUrl: "https://github.com/openai/codex" },
     { id: "claude", name: "Claude Code", command: "claude", args: ["--dangerously-skip-permissions"], cwd: ".", enabled: true, provider: "anthropic", permission_mode: "configure-before-start", versionArgs: ["--version"], docUrl: "https://docs.claude.com/claude-code" },
-    { id: "kimi", name: "Kimi", command: "kimi", args: [], cwd: ".", enabled: true, provider: "moonshot", permission_mode: "configure-before-start", versionArgs: ["--version"], docUrl: "https://platform.moonshot.cn" }
+    { id: "kimi", name: "Kimi", command: "kimi", args: ["-y"], cwd: ".", enabled: true, provider: "moonshot", permission_mode: "configure-before-start", versionArgs: ["--version"], docUrl: "https://platform.moonshot.cn" }
   ];
 }
 
@@ -763,11 +756,11 @@ function checkHealth() {
 function discoveredBuiltinAgents() {
   return builtinAgentPresets()
     .filter((preset) => commandAvailable(preset.command))
-    .map((preset) => normalizeCodexAgent({
+    .map((preset) => normalizeKimiAgent(normalizeClaudeAgent(normalizeCodexAgent({
       ...agentDetect.presetToAgentTemplate(preset),
       type: preset.id,
       auto_discovered: true
-    }));
+    }))));
 }
 
 // Seed a default agent only when the config has no agents yet (first run). Once the user
@@ -1010,8 +1003,7 @@ function listRoleTemplates() {
       seen.add(id);
       roles.push({
         id,
-        title: String(role.title || template?.name || id),
-        emoji: String(role.emoji || ""),
+        name: String(template?.name || id),
         summary: String(role.summary || ""),
         track: String(role.track || ""),
         skills: Array.isArray(template?.skills) ? template.skills : [],
@@ -1053,7 +1045,7 @@ function hiredAgentFromTemplate(roleId, template, enable = true) {
   const codexRt = resolveRuntime(template, "codex");
   const agent = {
     id: roleId,
-    name: role.title || template.name || roleId,
+    name: template.name || roleId,
     role_id: roleId,
     // Flatten the default runtime so the launch path keeps working on agents.
     command: rt.command,
@@ -1296,11 +1288,13 @@ function loadRoleDetail(roleId) {
         command: rt.command,
         args: rt.args,
         instructions_file: rt.instructionsFile,
-        skills_dir: rt.skillsDir
+        skills_dir: rt.skillsDir,
+        model: rt.model
       };
     }
     return {
       id,
+      name: String(template.name || id),
       source,
       library,
       origin,
@@ -1349,12 +1343,20 @@ function saveRole(roleId, payload = {}, options = {}) {
   const template = detail.template;
   const roleMeta = template.role && typeof template.role === "object" ? { ...template.role } : {};
   const payloadRole = payload.role && typeof payload.role === "object" ? payload.role : {};
-  for (const key of ["title", "emoji", "summary", "track"]) {
+  for (const key of ["summary", "track"]) {
     if (key in payloadRole) {
       roleMeta[key] = String(payloadRole[key] ?? "");
     }
   }
+  // Naming convention (direction A): single clean `name` at top level; the role
+  // object carries only summary + track. Drop any legacy title/emoji that an
+  // old global template may still have when promoting it into the workspace.
+  delete roleMeta.title;
+  delete roleMeta.emoji;
   const merged = { ...template, id, role: roleMeta };
+  if (typeof payload.name === "string" && payload.name.trim()) {
+    merged.name = payload.name.trim();
+  }
 
   // New schema: write runtimes / default_runtime / autonomy; drop old flat keys.
   if (payload.runtimes && typeof payload.runtimes === "object") {
@@ -1368,6 +1370,11 @@ function saveRole(roleId, payload = {}, options = {}) {
         instructions_file: String(rt?.instructions_file || (name === "codex" ? "AGENTS.md" : "CLAUDE.md")).trim(),
         skills_dir: String(rt?.skills_dir || (name === "codex" ? ".codex/skills" : ".claude/skills")).trim()
       };
+      // Per-runtime model: only persist when non-empty (empty = use CLI default).
+      const rtModel = typeof rt?.model === "string" ? rt.model.trim() : "";
+      if (rtModel) {
+        runtimes[name].model = rtModel;
+      }
     }
     if (Object.keys(runtimes).length) {
       merged.runtimes = runtimes;
@@ -1390,12 +1397,10 @@ function saveRole(roleId, payload = {}, options = {}) {
   if (payload.skills !== undefined) {
     merged.skills = normalizeStringArray(payload.skills);
   }
-  const model = typeof payload.model === "string" ? payload.model.trim() : "";
-  if (model) {
-    merged.model = model;
-  } else {
-    delete merged.model;
-  }
+  // model now lives per-runtime under runtimes.<family>.model (written above).
+  // Always drop any legacy top-level model so it can't leak a claude-only alias
+  // (e.g. "opus") onto codex/kimi runtimes.
+  delete merged.model;
   if (payload.collab !== undefined) {
     const collabInput = payload.collab && typeof payload.collab === "object" ? payload.collab : {};
     const collab = {};
@@ -1557,17 +1562,18 @@ function assignAgentType(agentId, agentType) {
   }
 
   const current = agents[index];
-  const roleTitle = String(current?.role?.title || "").trim();
-  const nextAgent = normalizeClaudeAgent(normalizeCodexAgent({
+  // name is the single source of truth; fall back to preset/id only if unset.
+  const currentName = String(current?.name || "").trim();
+  const nextAgent = normalizeKimiAgent(normalizeClaudeAgent(normalizeCodexAgent({
     ...current,
     type: preset.id,
-    name: roleTitle || current.name || preset.name || current.id,
+    name: currentName || preset.name || current.id,
     command: preset.command,
     args: Array.isArray(preset.args) ? preset.args : [],
     provider: preset.provider,
     permission_mode: preset.permission_mode || current.permission_mode || "configure-before-start",
     cwd: "."
-  }));
+  })));
   delete nextAgent.auto_discovered;
   delete nextAgent.versionArgs;
   delete nextAgent.docUrl;
@@ -2166,7 +2172,11 @@ function directStartAgent(agentId) {
       cols: 96,
       rows: 28,
       cwd: agentCwd(agent),
-      env: { ...process.env, TERM: "xterm-256color" }
+      // TERM stays at the xterm-256color "greatest common denominator" terminfo;
+      // 24-bit color is advertised separately via COLORTERM so embedded TUIs
+      // (Claude Code / Codex) keep truecolor even when launched from a GUI app
+      // whose inherited environment lacks COLORTERM.
+      env: { ...process.env, TERM: "xterm-256color", COLORTERM: "truecolor" }
     });
   } catch (error) {
     persistStatus(agentId, {
@@ -2562,6 +2572,14 @@ function createTmuxSession(config, agentsToStart = null) {
   ]);
   const firstPane = runTmux(["display-message", "-p", "-t", `${session}:0.0`, "#{pane_id}"]).stdout.trim();
   runtime.agents[first.id] = setupTmuxAgentRuntime(WORKSPACE_ROOT, first, firstPane);
+
+  // tmux defaults to a terminfo (screen/tmux) without truecolor, so it would
+  // downgrade 24-bit SGR to 256 color before forwarding to our xterm.js client.
+  // Advertise the Tc capability for xterm-256color so truecolor survives the
+  // tmux hop; pairs with COLORTERM=truecolor on the attach/agent ptys. Append
+  // (-a) to avoid clobbering any existing overrides; tolerate old tmux builds.
+  runTmux(["set-option", "-t", session, "default-terminal", "xterm-256color"], { check: false });
+  runTmux(["set-option", "-a", "-t", session, "terminal-overrides", ",xterm-256color:Tc"], { check: false });
 
   for (const agent of rest) {
     const pane = runTmux([

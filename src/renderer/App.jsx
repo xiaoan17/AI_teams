@@ -14,6 +14,7 @@ import {
 } from "./terminal-wheel.mjs";
 import "./styles.css";
 import { DEFAULT_THEME_ID, themePresets, themeToCssVars } from "./themes.js";
+import { Dashboard } from "./Dashboard.jsx";
 import { installRendererLogging } from "./renderer-log.mjs";
 import { LocaleProvider, useT, useLocale } from "./i18n.js";
 import { toastTtl, toastGlyph } from "./toast-util.js";
@@ -157,8 +158,9 @@ const browserPreviewApi = {
     defaultRuntime: "claude",
     autonomy: "auto",
     runtimes: {
-      claude: { command: "claude", args: ["--dangerously-skip-permissions"], instructions_file: "CLAUDE.md", skills_dir: ".claude/skills" },
-      codex: { command: "codex", args: ["--dangerously-bypass-approvals-and-sandbox"], instructions_file: "AGENTS.md", skills_dir: ".codex/skills" }
+      claude: { command: "claude", args: ["--dangerously-skip-permissions"], instructions_file: "CLAUDE.md", skills_dir: ".claude/skills", model: "opus" },
+      codex: { command: "codex", args: ["--dangerously-bypass-approvals-and-sandbox"], instructions_file: "AGENTS.md", skills_dir: ".codex/skills", model: "" },
+      kimi: { command: "kimi", args: ["-y"], instructions_file: "CLAUDE.md", skills_dir: ".claude/skills", model: "" }
     },
     template: {
       id: roleId,
@@ -169,9 +171,8 @@ const browserPreviewApi = {
       skills: ["frontend-ui"],
       persona_file: "CLAUDE.md",
       version: "0.0.0",
-      model: "opus",
       runtimes: {
-        claude: { command: "claude", args: ["--dangerously-skip-permissions"], instructions_file: "CLAUDE.md", skills_dir: ".claude/skills" },
+        claude: { command: "claude", args: ["--dangerously-skip-permissions"], instructions_file: "CLAUDE.md", skills_dir: ".claude/skills", model: "opus" },
         codex: { command: "codex", args: ["--dangerously-bypass-approvals-and-sandbox"], instructions_file: "AGENTS.md", skills_dir: ".codex/skills" }
       },
       collab: { upstream: ["prd"], downstream: ["qa"], handoff_via: ".aiteam/tasks/" }
@@ -283,41 +284,33 @@ function stoppedOrExited(agent) {
 }
 
 function agentDisplayName(agent) {
-  const roleTitle = String(agent?.role?.title || "").trim();
-  if (roleTitle) {
-    const roleEmoji = String(agent?.role?.emoji || "").trim();
-    return [roleEmoji, roleTitle].filter(Boolean).join(" ");
-  }
-  return agent?.name || agent?.id || "";
+  // `name` is the single source of truth for the display label (role schema
+  // direction A: no separate title, no emoji/badge prefix). Fall back to id.
+  return String(agent?.name || agent?.id || "").trim();
 }
 
 function agentPanelTitle(agent) {
-  // With a role assigned, show "Role + Runtime". Without a role,
-  // agentDisplayName falls back to agent.name (which agentRuntimeLabel already
-  // folds in), so joining would duplicate it ("Codex Demo + Codex Demo").
-  // In that case show the runtime label alone.
-  const hasRole = Boolean(String(agent?.role?.title || "").trim());
-  if (hasRole) {
-    return [agentDisplayName(agent), agentRuntimeLabel(agent)].filter(Boolean).join(" + ");
+  // Panel title is "DisplayName + Runtime" (e.g. "技术负责人 + Claude").
+  // agentRuntimeLabel returns the bare runtime, so the two never duplicate;
+  // if they happen to coincide (display name IS the runtime), show one.
+  const display = agentDisplayName(agent);
+  const runtime = agentRuntimeLabel(agent);
+  if (display && runtime && display !== runtime) {
+    return `${display} + ${runtime}`;
   }
-  return agentRuntimeLabel(agent) || agentDisplayName(agent);
+  return display || runtime;
 }
 
 function agentRuntimeLabel(agent) {
+  // Bare runtime identity only — the agent's own name is shown separately by
+  // agentDisplayName, so do NOT fold it in here (that caused "Claude · <name>"
+  // to duplicate the role name already shown on the left).
   const type = String(agent?.type || "").trim().toLowerCase();
   const command = String(agent?.command || "").trim().split(/\s+/)[0];
-  const base = type === "codex"
-    ? "Codex"
-    : type === "claude"
-      ? "Claude"
-      : type === "kimi"
-        ? "Kimi"
-        : agent?.name || command || agent?.id || "Agent";
-  const name = String(agent?.name || "").trim();
-  if (name && name !== base && !name.toLowerCase().startsWith(base.toLowerCase())) {
-    return `${base} · ${name}`;
-  }
-  return name || base;
+  if (type === "codex") return "Codex";
+  if (type === "claude") return "Claude";
+  if (type === "kimi") return "Kimi";
+  return command || agent?.name || agent?.id || "Agent";
 }
 
 function staleRouteNotice(value) {
@@ -462,6 +455,31 @@ function formatDocumentTime(value, t) {
     : { year: "numeric", month: "short", day: "numeric" });
 }
 
+function createDashboardEvent(type, kind, text, extra = {}) {
+  return {
+    id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+    type,
+    kind,
+    text,
+    time: new Date().toISOString(),
+    ...extra
+  };
+}
+
+function extractSnapshotSummary(snapshot) {
+  const text = String(snapshot?.data || "");
+  const lines = text.split(/\r?\n/).map((line) => line.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "").trim()).filter(Boolean);
+  const tail = lines.at(-1) || "";
+  return { doing: tail, tail };
+}
+
+function agentStatusKind(status) {
+  if (status === "running_or_idle" || status === "starting") return "run";
+  if (status === "waiting_input") return "wait";
+  if (status === "error" || status === "missing_runtime" || status === "pane_missing") return "err";
+  return "stop";
+}
+
 function DocumentTreeNode({
   node,
   depth = 0,
@@ -567,7 +585,7 @@ function DocumentTreeNode({
   );
 }
 
-function AgentTerminal({ agent, active, hidden, terminalTheme, onFocus, onNotice }) {
+function AgentTerminal({ agent, active, hidden, terminalTheme, onFocus, onNotice, onStop, onToggleMinimize }) {
   const t = useT();
   const containerRef = useRef(null);
   const termRef = useRef(null);
@@ -904,10 +922,15 @@ function AgentTerminal({ agent, active, hidden, terminalTheme, onFocus, onNotice
     agent.reason ? `Reason: ${agent.reason}` : ""
   ].filter(Boolean).join("\n");
   const displayName = agentPanelTitle(agent);
+  const runtime = agentRuntimeLabel(agent);
+  const paneLabel = agent.pane ? `pane ${agent.pane}` : "pane -";
   const terminalTitle = [
     displayName,
     [agent.backend || "direct-pty", agent.pane].filter(Boolean).join(" ")
   ].filter(Boolean).join(" · ");
+  const statusKey = STATUS_LABEL_KEYS[agent.status];
+  const statusText = statusKey ? t(statusKey) : agent.status;
+  const dotClass = statusClass(agent.status);
 
   return (
     <section
@@ -921,12 +944,40 @@ function AgentTerminal({ agent, active, hidden, terminalTheme, onFocus, onNotice
       onClick={onFocus}
     >
       <header className="terminal-header">
-        <div>
+        <span className={`terminal-status-dot ${dotClass}`} title={statusTitle} />
+        <div className="terminal-title-block">
           <div className="terminal-name" title={terminalTitle}>{displayName}</div>
+          <div className="terminal-meta">{runtime} · {paneLabel}</div>
         </div>
-        <div className={`status-pill ${statusClass(agent.status)}`} title={statusTitle}>
-          <span className="status-dot" />
-          {STATUS_LABEL_KEYS[agent.status] ? t(STATUS_LABEL_KEYS[agent.status]) : agent.status}
+        <div className="terminal-actions">
+          <div className={`status-pill ${dotClass}`} title={statusTitle}>
+            <span className="status-dot" />
+            {statusText}
+          </div>
+          <button
+            className="terminal-action"
+            type="button"
+            title={t("sidebar.minimizePanel")}
+            aria-label={`${t("sidebar.minimizePanel")} ${displayName}`}
+            onClick={(event) => {
+              event.stopPropagation();
+              onToggleMinimize?.();
+            }}
+          >
+            –
+          </button>
+          <button
+            className="terminal-action terminal-action-stop"
+            type="button"
+            title={t("sidebar.stopAgent")}
+            aria-label={`${t("sidebar.stopAgent")} ${displayName}`}
+            onClick={(event) => {
+              event.stopPropagation();
+              onStop?.();
+            }}
+          >
+            ✕
+          </button>
         </div>
       </header>
       <div className="terminal-surface" ref={containerRef} />
@@ -944,11 +995,13 @@ function csvToArray(text) {
 
 function blankRuntimeForm(runtime) {
   const isCodex = runtime === "codex";
+  const isKimi = runtime === "kimi";
   return {
-    command: isCodex ? "codex" : "claude",
+    command: runtime,
     argsText: "",
     instructionsFile: isCodex ? "AGENTS.md" : "CLAUDE.md",
-    skillsDir: isCodex ? ".codex/skills" : ".claude/skills"
+    skillsDir: isCodex ? ".codex/skills" : (isKimi ? ".claude/skills" : ".claude/skills"),
+    model: ""
   };
 }
 
@@ -956,8 +1009,12 @@ function blankRoleForm() {
   return {
     title: "", emoji: "", summary: "", track: "",
     defaultRuntime: "claude", autonomy: "auto",
-    runtimes: { claude: blankRuntimeForm("claude"), codex: blankRuntimeForm("codex") },
-    model: "", skillsText: "",
+    runtimes: {
+      claude: blankRuntimeForm("claude"),
+      codex: blankRuntimeForm("codex"),
+      kimi: blankRuntimeForm("kimi")
+    },
+    skillsText: "",
     upstreamText: "", downstreamText: "", handoffVia: "", persona: ""
   };
 }
@@ -965,10 +1022,11 @@ function blankRoleForm() {
 function runtimeViewToForm(rt, runtime) {
   if (!rt) return blankRuntimeForm(runtime);
   return {
-    command: String(rt.command || (runtime === "codex" ? "codex" : "claude")),
+    command: String(rt.command || runtime),
     argsText: (Array.isArray(rt.args) ? rt.args : []).join("\n"),
     instructionsFile: String(rt.instructions_file || (runtime === "codex" ? "AGENTS.md" : "CLAUDE.md")),
-    skillsDir: String(rt.skills_dir || (runtime === "codex" ? ".codex/skills" : ".claude/skills"))
+    skillsDir: String(rt.skills_dir || (runtime === "codex" ? ".codex/skills" : ".claude/skills")),
+    model: String(rt.model || "")
   };
 }
 
@@ -978,17 +1036,16 @@ function detailToForm(detail) {
   const collab = template.collab && typeof template.collab === "object" ? template.collab : {};
   const detailRuntimes = detail?.runtimes && typeof detail.runtimes === "object" ? detail.runtimes : {};
   return {
-    title: String(role.title || ""),
-    emoji: String(role.emoji || ""),
+    name: String(detail?.name || template.name || ""),
     summary: String(role.summary || ""),
     track: String(role.track || ""),
     defaultRuntime: String(detail?.defaultRuntime || "claude"),
     autonomy: String(detail?.autonomy || "auto"),
     runtimes: {
       claude: runtimeViewToForm(detailRuntimes.claude, "claude"),
-      codex: runtimeViewToForm(detailRuntimes.codex, "codex")
+      codex: runtimeViewToForm(detailRuntimes.codex, "codex"),
+      kimi: runtimeViewToForm(detailRuntimes.kimi, "kimi")
     },
-    model: String(template.model || ""),
     skillsText: (Array.isArray(template.skills) ? template.skills : []).join(", "),
     upstreamText: (Array.isArray(collab.upstream) ? collab.upstream : []).join(", "),
     downstreamText: (Array.isArray(collab.downstream) ? collab.downstream : []).join(", "),
@@ -1278,24 +1335,19 @@ function RoleConfigModal({ api, roles, onClose, onRolesChanged }) {
     setBusy(true);
     try {
       const payload = {
-        role: { title: form.title, emoji: form.emoji, summary: form.summary, track: form.track },
+        name: form.name,
+        role: { summary: form.summary, track: form.track },
         default_runtime: form.defaultRuntime,
         autonomy: form.autonomy,
-        runtimes: {
-          claude: {
-            command: form.runtimes.claude.command,
-            args: linesToArray(form.runtimes.claude.argsText),
-            instructions_file: form.runtimes.claude.instructionsFile,
-            skills_dir: form.runtimes.claude.skillsDir
-          },
-          codex: {
-            command: form.runtimes.codex.command,
-            args: linesToArray(form.runtimes.codex.argsText),
-            instructions_file: form.runtimes.codex.instructionsFile,
-            skills_dir: form.runtimes.codex.skillsDir
-          }
-        },
-        model: form.model,
+        runtimes: Object.fromEntries(
+          ["claude", "codex", "kimi"].map((rtName) => [rtName, {
+            command: form.runtimes[rtName].command,
+            args: linesToArray(form.runtimes[rtName].argsText),
+            instructions_file: form.runtimes[rtName].instructionsFile,
+            skills_dir: form.runtimes[rtName].skillsDir,
+            model: form.runtimes[rtName].model
+          }])
+        ),
         skills: csvToArray(form.skillsText),
         collab: {
           upstream: csvToArray(form.upstreamText),
@@ -1381,8 +1433,7 @@ function RoleConfigModal({ api, roles, onClose, onRolesChanged }) {
               {roles.length ? roles.map((role) => (
                 <div key={role.id} className="role-list-row">
                   <span className="role-list-main">
-                    <span className="role-list-emoji">{role.emoji || "🧩"}</span>
-                    <span className="role-list-title">{role.title || role.id}</span>
+                    <span className="role-list-title">{role.name || role.id}</span>
                     <span className="role-list-id">{role.id}</span>
                     <span className={`role-source-badge role-source-${role.source || "global"}`}>{role.source || "global"}</span>
                     {role.hired ? <span className="role-source-badge">已雇</span> : null}
@@ -1425,12 +1476,8 @@ function RoleConfigModal({ api, roles, onClose, onRolesChanged }) {
               </div>
               <div className="role-field-row">
                 <div className="role-field">
-                  <label>标题</label>
-                  <input value={form.title} onChange={(event) => updateForm({ title: event.target.value })} />
-                </div>
-                <div className="role-field role-field-narrow">
-                  <label>Emoji</label>
-                  <input value={form.emoji} onChange={(event) => updateForm({ emoji: event.target.value })} />
+                  <label>名称</label>
+                  <input value={form.name} onChange={(event) => updateForm({ name: event.target.value })} />
                 </div>
                 <div className="role-field role-field-narrow">
                   <label>Track</label>
@@ -1447,6 +1494,7 @@ function RoleConfigModal({ api, roles, onClose, onRolesChanged }) {
                   <select value={form.defaultRuntime} onChange={(event) => updateForm({ defaultRuntime: event.target.value })}>
                     <option value="claude">Claude</option>
                     <option value="codex">Codex</option>
+                    <option value="kimi">Kimi</option>
                   </select>
                 </div>
                 <div className="role-field">
@@ -1456,16 +1504,12 @@ function RoleConfigModal({ api, roles, onClose, onRolesChanged }) {
                     <option value="human">human（需人工）</option>
                   </select>
                 </div>
-                <div className="role-field">
-                  <label>Model（留空=不指定）</label>
-                  <input value={form.model} onChange={(event) => updateForm({ model: event.target.value })} placeholder="opus" />
-                </div>
               </div>
 
-              {["claude", "codex"].map((rtName) => (
+              {["claude", "codex", "kimi"].map((rtName) => (
                 <div key={rtName} className="role-runtime-block">
                   <div className="role-runtime-title">
-                    运行时：{rtName === "claude" ? "Claude" : "Codex"}
+                    运行时：{rtName === "claude" ? "Claude" : rtName === "codex" ? "Codex" : "Kimi"}
                     {form.defaultRuntime === rtName ? <span className="role-source-badge role-source-workspace">默认</span> : null}
                   </div>
                   <div className="role-field-row">
@@ -1481,10 +1525,14 @@ function RoleConfigModal({ api, roles, onClose, onRolesChanged }) {
                       <label>Skills 目录</label>
                       <input value={form.runtimes[rtName].skillsDir} onChange={(event) => updateRuntime(rtName, { skillsDir: event.target.value })} placeholder={rtName === "codex" ? ".codex/skills" : ".claude/skills"} />
                     </div>
+                    <div className="role-field">
+                      <label>Model（留空=用 CLI 默认）</label>
+                      <input value={form.runtimes[rtName].model} onChange={(event) => updateRuntime(rtName, { model: event.target.value })} placeholder={rtName === "claude" ? "opus" : rtName === "codex" ? "gpt-5.2" : "kimi-k2"} />
+                    </div>
                   </div>
                   <div className="role-field">
                     <label>Args（一行一个参数）</label>
-                    <textarea rows={2} value={form.runtimes[rtName].argsText} onChange={(event) => updateRuntime(rtName, { argsText: event.target.value })} placeholder={rtName === "codex" ? "--dangerously-bypass-approvals-and-sandbox" : "--dangerously-skip-permissions"} />
+                    <textarea rows={2} value={form.runtimes[rtName].argsText} onChange={(event) => updateRuntime(rtName, { argsText: event.target.value })} placeholder={rtName === "codex" ? "--dangerously-bypass-approvals-and-sandbox" : rtName === "kimi" ? "-y" : "--dangerously-skip-permissions"} />
                   </div>
                 </div>
               ))}
@@ -1809,7 +1857,7 @@ function Sidebar({
                   <option value="">{t("sidebar.unassignedRole")}</option>
                   {roles.map((role) => (
                     <option key={role.id} value={role.id}>
-                      {[role.emoji, role.title || role.id].filter(Boolean).join(" ")}
+                      {role.name || role.id}
                     </option>
                   ))}
                 </select>
@@ -1929,6 +1977,51 @@ function Sidebar({
   );
 }
 
+function WorkspaceTopbar({
+  view,
+  runningCount,
+  theme,
+  onViewChange,
+  onToggleTheme,
+  onStartEnabled,
+  onStopEnabled
+}) {
+  const t = useT();
+  const nextThemeLabel = theme.colorScheme === "dark" ? t("theme.toggleToLight") : t("theme.toggleToDark");
+  return (
+    <header className="workspace-topbar">
+      <div className="segmented" role="tablist" aria-label="Workspace view">
+        <button
+          type="button"
+          role="tab"
+          aria-selected={view === "terminal"}
+          className={["seg", view === "terminal" ? "on" : ""].filter(Boolean).join(" ")}
+          onClick={() => onViewChange("terminal")}
+        >
+          {t("view.terminal")}
+          <span className="seg-badge">{runningCount}</span>
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={view === "dashboard"}
+          className={["seg", view === "dashboard" ? "on" : ""].filter(Boolean).join(" ")}
+          onClick={() => onViewChange("dashboard")}
+        >
+          {t("view.dashboard")}
+        </button>
+      </div>
+      <div className="topbar-actions">
+        <button className="topbar-button" type="button" onClick={onToggleTheme} title={nextThemeLabel} aria-label={nextThemeLabel}>
+          {theme.colorScheme === "dark" ? "☀" : "☾"}
+        </button>
+        <button className="topbar-button" type="button" onClick={onStartEnabled}>{t("sidebar.start")}</button>
+        <button className="topbar-button" type="button" onClick={onStopEnabled}>{t("sidebar.stop")}</button>
+      </div>
+    </header>
+  );
+}
+
 const Composer = forwardRef(function Composer({ agents, documents, activeAgentId, taskPath, onTaskPathChange, onRoute }, ref) {
   const t = useT();
   const [value, setValue] = useState("");
@@ -2004,8 +2097,8 @@ const Composer = forwardRef(function Composer({ agents, documents, activeAgentId
     const textarea = textareaRef.current;
     if (!textarea) return;
     textarea.style.height = "auto";
-    const next = Math.min(textarea.scrollHeight, 160);
-    textarea.style.height = `${Math.max(next, 58)}px`;
+    const next = Math.min(textarea.scrollHeight, 168);
+    textarea.style.height = `${Math.max(next, 52)}px`;
   }, [value]);
 
   useImperativeHandle(ref, () => ({
@@ -2074,27 +2167,7 @@ const Composer = forwardRef(function Composer({ agents, documents, activeAgentId
 
   return (
     <footer className={["composer", hasMention ? "composer-has-targets" : "", attachedDocument ? "composer-has-doc" : ""].filter(Boolean).join(" ")}>
-      {hasMention || attachedDocument ? (
-        <div className="composer-topline">
-          <div className="composer-targets">
-            {hasMention ? `${t("composer.targets")}${mentionPreview.length ? mentionPreview.map((item) => `@${item}`).join(" ") : t("composer.targetsNone")}` : ""}
-          </div>
-          {attachedDocument ? (
-            <span className="attachment-chip" title={`${attachedDocument.relativePath}`}>
-              <span className="attachment-chip-label">{attachedDocument.name}</span>
-              <button
-                type="button"
-                title={t("composer.removeDoc")}
-                aria-label={t("composer.removeDoc")}
-                onClick={() => onTaskPathChange("")}
-              >
-                ✕
-              </button>
-            </span>
-          ) : null}
-        </div>
-      ) : null}
-      <div className="composer-row">
+      <div className="composer-shell">
         <textarea
           ref={textareaRef}
           value={value}
@@ -2137,82 +2210,106 @@ const Composer = forwardRef(function Composer({ agents, documents, activeAgentId
           }}
           disabled={sending}
         />
-        <div className="composer-doc-tools" ref={docPickerRef}>
-          <button
-            className="attach-doc-button"
-            type="button"
-            title={attachedDocument ? t("composer.changeDoc") : t("composer.attachDoc")}
-            aria-label={attachedDocument ? t("composer.changeDoc") : t("composer.attachDoc")}
-            aria-haspopup="dialog"
-            aria-expanded={docMenuOpen}
-            onClick={() => {
-              setDocMenuOpen((open) => {
-                if (!open) setDocQuery("");
-                return !open;
-              });
-            }}
-          >
-            📎
-          </button>
-          {docMenuOpen ? (
-            <div className="doc-picker-menu" role="dialog" aria-label={t("composer.attachDoc")}>
-              <input
-                className="doc-picker-search"
-                type="search"
-                value={docQuery}
-                placeholder={t("sidebar.searchDocs")}
-                onChange={(event) => setDocQuery(event.target.value)}
-                autoFocus
-              />
-              <div className="doc-picker-list">
-                {attachedDocument ? (
-                  <button
-                    type="button"
-                    className="doc-picker-option doc-picker-clear"
-                    onClick={() => {
-                      onTaskPathChange("");
-                      setDocMenuOpen(false);
-                      setDocQuery("");
-                    }}
-                  >
-                    {t("composer.noDoc")}
-                  </button>
-                ) : null}
-                {docPickerOptions.length ? docPickerOptions.map((document) => (
-                  <button
-                    key={document.path}
-                    type="button"
-                    className={[
-                      "doc-picker-option",
-                      document.path === taskPath ? "doc-picker-option-active" : ""
-                    ].filter(Boolean).join(" ")}
-                    onClick={() => {
-                      onTaskPathChange(document.path);
-                      setDocMenuOpen(false);
-                      setDocQuery("");
-                    }}
-                  >
-                    <span>
-                      {document.pinned ? "★ " : ""}
-                      {document.name}
-                    </span>
-                    <small>{documentFolderLabel(document.folder)}</small>
-                  </button>
-                )) : (
-                  <div className="doc-picker-empty">{t("sidebar.noMatchingDocs")}</div>
-                )}
-              </div>
+        <div className="composer-tools">
+          <div className="tool-left">
+            <div className="composer-doc-tools" ref={docPickerRef}>
+              <button
+                className={["tool-btn", attachedDocument ? "on" : ""].filter(Boolean).join(" ")}
+                type="button"
+                title={attachedDocument ? t("composer.changeDoc") : t("composer.attachDoc")}
+                aria-label={attachedDocument ? t("composer.changeDoc") : t("composer.attachDoc")}
+                aria-haspopup="dialog"
+                aria-expanded={docMenuOpen}
+                onClick={() => {
+                  setDocMenuOpen((open) => {
+                    if (!open) setDocQuery("");
+                    return !open;
+                  });
+                }}
+              >
+                📎
+              </button>
+              {docMenuOpen ? (
+                <div className="doc-picker-menu" role="dialog" aria-label={t("composer.attachDoc")}>
+                  <input
+                    className="doc-picker-search"
+                    type="search"
+                    value={docQuery}
+                    placeholder={t("sidebar.searchDocs")}
+                    onChange={(event) => setDocQuery(event.target.value)}
+                    autoFocus
+                  />
+                  <div className="doc-picker-list">
+                    {attachedDocument ? (
+                      <button
+                        type="button"
+                        className="doc-picker-option doc-picker-clear"
+                        onClick={() => {
+                          onTaskPathChange("");
+                          setDocMenuOpen(false);
+                          setDocQuery("");
+                        }}
+                      >
+                        {t("composer.noDoc")}
+                      </button>
+                    ) : null}
+                    {docPickerOptions.length ? docPickerOptions.map((document) => (
+                      <button
+                        key={document.path}
+                        type="button"
+                        className={[
+                          "doc-picker-option",
+                          document.path === taskPath ? "doc-picker-option-active" : ""
+                        ].filter(Boolean).join(" ")}
+                        onClick={() => {
+                          onTaskPathChange(document.path);
+                          setDocMenuOpen(false);
+                          setDocQuery("");
+                        }}
+                      >
+                        <span>
+                          {document.pinned ? "★ " : ""}
+                          {document.name}
+                        </span>
+                        <small>{documentFolderLabel(document.folder)}</small>
+                      </button>
+                    )) : (
+                      <div className="doc-picker-empty">{t("sidebar.noMatchingDocs")}</div>
+                    )}
+                  </div>
+                </div>
+              ) : null}
             </div>
-          ) : null}
+            {attachedDocument ? (
+              <span className="attachment-chip" title={`${attachedDocument.relativePath}`}>
+                <span className="attachment-chip-label">{attachedDocument.name}</span>
+                <button
+                  type="button"
+                  title={t("composer.removeDoc")}
+                  aria-label={t("composer.removeDoc")}
+                  onClick={() => onTaskPathChange("")}
+                >
+                  ✕
+                </button>
+              </span>
+            ) : null}
+            <span className="target-chip" title={hasMention ? mentionPreview.map((item) => `@${item}`).join(" ") : activeAgentDisplayName}>
+              <i />
+              {hasMention
+                ? `${t("composer.targets")}${mentionPreview.length ? mentionPreview.map((item) => `@${item}`).join(" ") : t("composer.targetsNone")}`
+                : activeAgentDisplayName ? `@${activeAgentDisplayName}` : t("composer.targetsNone")}
+            </span>
+          </div>
+          <div className="composer-hint">{t("composer.hint")}</div>
+          <button
+            className="send-button"
+            onClick={submit}
+            title={t("composer.sendTooltip")}
+            disabled={!canSubmit}
+          >
+            {sending ? t("composer.sending") : t("composer.send")}
+          </button>
         </div>
-        <button
-          className="send-button"
-          onClick={submit}
-          title={t("composer.sendTooltip")}
-          disabled={!canSubmit}
-        >
-          {sending ? t("composer.sending") : t("composer.send")}
-        </button>
       </div>
     </footer>
   );
@@ -2321,6 +2418,19 @@ function App() {
     }
   });
   const [taskPath, setTaskPath] = useState("");
+  const [workspaceView, setWorkspaceView] = useState(() => {
+    try {
+      return window.localStorage?.getItem("aiTeams.workspaceView") === "dashboard" ? "dashboard" : "terminal";
+    } catch {
+      return "terminal";
+    }
+  });
+  const [dashboardEvents, setDashboardEvents] = useState([]);
+  const [agentSnapshots, setAgentSnapshots] = useState({});
+
+  const pushDashboardEvent = useCallback((event) => {
+    setDashboardEvents((current) => [event, ...current].slice(0, 50));
+  }, []);
 
   useEffect(() => {
     try {
@@ -2329,6 +2439,14 @@ function App() {
       // Ignore storage failures in restricted browser contexts.
     }
   }, [theme.id]);
+
+  useEffect(() => {
+    try {
+      window.localStorage?.setItem("aiTeams.workspaceView", workspaceView);
+    } catch {
+      // Ignore storage failures in restricted browser contexts.
+    }
+  }, [workspaceView]);
 
   useEffect(() => {
     try {
@@ -2480,10 +2598,21 @@ function App() {
     });
     const offStatus = api.onAgentStatus((updated) => {
       setAgents((current) => current.map((agent) => (agent.id === updated.id ? { ...agent, ...updated } : agent)));
+      const labelKey = STATUS_LABEL_KEYS[updated.status] || "status.stopped";
+      pushDashboardEvent(createDashboardEvent(
+        "status",
+        agentStatusKind(updated.status),
+        `${updated.name || updated.id} · ${t(labelKey)}`
+      ));
     });
     const offRouteVerify = api.onRouteVerify?.((payload) => {
       if (payload && payload.verified === false) {
         setNotice(`Message may not have been injected into @${payload.id}; check that agent terminal.`);
+        pushDashboardEvent(createDashboardEvent(
+          "verify",
+          "err",
+          `@${payload.id} route verify failed`
+        ));
       }
     }) || (() => {});
     const offWorkspace = api.onWorkspaceChanged(() => {
@@ -2531,7 +2660,7 @@ function App() {
       offDocumentsChanged();
       offMenuCommand();
     };
-  }, [loadWorkspaceData, refreshDocuments]);
+  }, [loadWorkspaceData, pushDashboardEvent, refreshDocuments, t]);
 
   useEffect(() => {
     try {
@@ -2544,6 +2673,32 @@ function App() {
   useEffect(() => {
     setActiveAgentId((current) => pickActiveAgentId(agents, current, minimizedAgents));
   }, [agents, minimizedAgents]);
+
+  useEffect(() => {
+    if (workspaceView !== "dashboard") return undefined;
+    let cancelled = false;
+    const loadSnapshots = async () => {
+      const entries = await Promise.all(agents
+        .filter((agent) => agent.enabled && !stoppedOrExited(agent))
+        .map(async (agent) => {
+          try {
+            const snapshot = await api.getAgentSnapshot(agent.id, { reason: "dashboard" });
+            return [agent.id, extractSnapshotSummary(snapshot)];
+          } catch {
+            return [agent.id, { doing: "", tail: "" }];
+          }
+        }));
+      if (!cancelled) {
+        setAgentSnapshots(Object.fromEntries(entries));
+      }
+    };
+    loadSnapshots();
+    const timer = setInterval(loadSnapshots, 8000);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [agents, workspaceView]);
 
   useEffect(() => {
     const enabled = agents.filter((agent) => agent.enabled);
@@ -2642,7 +2797,22 @@ function App() {
 
   const route = async (message, targets = [], options = {}) => {
     try {
-      await api.routeMessage(message, targets, options);
+      const result = await api.routeMessage(message, targets, options);
+      const resolvedTargets = Array.isArray(result?.targets) && result.targets.length
+        ? result.targets
+        : targets.length
+          ? targets
+          : ["@mention"];
+      pushDashboardEvent(createDashboardEvent(
+        "route",
+        "msg",
+        `${t("dashboard.you")} → ${resolvedTargets.join(", ")}`,
+        {
+          from: t("dashboard.you"),
+          to: resolvedTargets.join(", "),
+          doc: options?.taskPath ? String(options.taskPath).split("/").pop() : ""
+        }
+      ));
       await refreshAgents();
       setNotice("");
     } catch (error) {
@@ -2753,48 +2923,74 @@ function App() {
         onInsertDocumentPath={insertDocumentPath}
       />
       <main className="workspace">
-        <section className={terminalLayoutClass}>
-          {runningAgents.map((agent) => (
-            <AgentTerminal
-              key={[
-                workspace?.root || "workspace",
-                agent.id,
-                agent.backend || "",
-                agent.pane || "",
-                agent.rawLog || "",
-                agent.transcriptLog || "",
-                agent.startedAt || ""
-              ].join(":")}
-              agent={agent}
-              active={activeAgentId === agent.id}
-              hidden={minimizedAgents.has(agent.id)}
-              terminalTheme={theme.terminal}
-              onFocus={() => setActiveAgentId(agent.id)}
-              onNotice={setNotice}
-            />
-          ))}
-          {!visibleTerminalAgents.length ? (
-            <div className="empty-state">
-              {minimizedCount ? (
-                <div className="empty-state-text">{t("empty.minimized", { n: minimizedCount })}</div>
-              ) : enabledAgents.length ? (
-                <>
-                  <div className="empty-state-text">{t("empty.noRunning")}</div>
-                  <button type="button" className="empty-state-cta" onClick={startEnabled}>
-                    {t("empty.startAll")}
-                  </button>
-                </>
-              ) : (
-                <>
-                  <div className="empty-state-text">{t("empty.noAgents")}</div>
-                  <button type="button" className="empty-state-cta" onClick={openRoleConfig}>
-                    {t("empty.configureTeam")}
-                  </button>
-                </>
-              )}
-            </div>
-          ) : null}
-        </section>
+        <WorkspaceTopbar
+          view={workspaceView}
+          runningCount={runningAgents.length}
+          theme={theme}
+          onViewChange={setWorkspaceView}
+          onToggleTheme={() => setThemeId(theme.colorScheme === "dark" ? "studioLight" : "studioDark")}
+          onStartEnabled={startEnabled}
+          onStopEnabled={stopEnabled}
+        />
+        {workspaceView === "dashboard" ? (
+          <Dashboard
+            agents={agents}
+            events={dashboardEvents}
+            snapshots={agentSnapshots}
+            onOpenAgent={(agentId) => {
+              if (minimizedAgents.has(agentId)) {
+                clearMinimized([agentId]);
+              }
+              setActiveAgentId(agentId);
+              setWorkspaceView("terminal");
+            }}
+          />
+        ) : (
+          <section className={terminalLayoutClass}>
+            {runningAgents.map((agent) => (
+              <AgentTerminal
+                key={[
+                  workspace?.root || "workspace",
+                  agent.id,
+                  agent.backend || "",
+                  agent.pane || "",
+                  agent.rawLog || "",
+                  agent.transcriptLog || "",
+                  agent.startedAt || ""
+                ].join(":")}
+                agent={agent}
+                active={activeAgentId === agent.id}
+                hidden={minimizedAgents.has(agent.id)}
+                terminalTheme={theme.terminal}
+                onFocus={() => setActiveAgentId(agent.id)}
+                onNotice={setNotice}
+                onStop={() => stopAgent(agent.id)}
+                onToggleMinimize={() => toggleAgentMinimized(agent.id)}
+              />
+            ))}
+            {!visibleTerminalAgents.length ? (
+              <div className="empty-state">
+                {minimizedCount ? (
+                  <div className="empty-state-text">{t("empty.minimized", { n: minimizedCount })}</div>
+                ) : enabledAgents.length ? (
+                  <>
+                    <div className="empty-state-text">{t("empty.noRunning")}</div>
+                    <button type="button" className="empty-state-cta" onClick={startEnabled}>
+                      {t("empty.startAll")}
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    <div className="empty-state-text">{t("empty.noAgents")}</div>
+                    <button type="button" className="empty-state-cta" onClick={openRoleConfig}>
+                      {t("empty.configureTeam")}
+                    </button>
+                  </>
+                )}
+              </div>
+            ) : null}
+          </section>
+        )}
 
         <Composer
           ref={composerRef}

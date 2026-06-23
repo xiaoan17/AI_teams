@@ -8,6 +8,16 @@ out/
 .vite/
 .aiteam-demo/
 
+# Session-local tooling / caches — never version these.
+/.claude/
+.playwright-mcp/
+
+# AI Teams role/crew workspaces are runtime assets (hired roles, their copied
+# skill bundles incl. third-party skills + venvs). The role import/hire logic
+# lives in src/; the materialized workspaces stay local.
+.aiteam/roles/
+.aiteam/crew/
+
 # AI Teams runtime output. Keep .aiteam/agents.json if you decide to version a
 # real workspace config, but logs/status are local runtime artifacts.
 .aiteam/runtime.json

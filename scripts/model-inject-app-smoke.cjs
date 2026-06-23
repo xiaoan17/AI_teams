@@ -41,6 +41,7 @@ try {
   assert.strictEqual(flagValue(claudeArgs, "--model"), "opus");
   assert(claudeArgs.indexOf("--model") < claudeArgs.indexOf("--add-dir"));
 
+  // codex model now comes from runtimes.codex.model (per-runtime), injected as -c model=
   const codex = {
     id: "codex",
     type: "codex",
@@ -49,25 +50,65 @@ try {
     persona_dir: ".aiteam/crew/frontend",
     persona_file: "CLAUDE.md",
     codex_instructions_file: "RTK.md",
-    model: "opus"
+    default_runtime: "codex",
+    runtimes: { codex: { command: "codex", model: "gpt-5.2" } }
   };
   const codexArgs = shellSplit(agentShellCommand(codex, { workspaceRoot }));
   const modelIndex = codexArgs.indexOf("-c");
   assert.notStrictEqual(modelIndex, -1);
-  assert.strictEqual(codexArgs[modelIndex + 1], "model=opus");
+  assert.strictEqual(codexArgs[modelIndex + 1], "model=gpt-5.2");
+
+  // Kimi is run as a blank slate: model injects via `-m <model>` from
+  // runtimes.kimi.model, and even with a persona_dir it must NOT emit --add-dir.
+  const kimi = {
+    id: "kimi",
+    type: "kimi",
+    command: "kimi",
+    args: ["-y"],
+    persona_dir: ".aiteam/crew/frontend",
+    persona_file: "CLAUDE.md",
+    default_runtime: "kimi",
+    runtimes: { kimi: { command: "kimi", model: "kimi-k2" } }
+  };
+  const kimiArgs = shellSplit(agentShellCommand(kimi, { workspaceRoot }));
+  assert.strictEqual(flagValue(kimiArgs, "-m"), "kimi-k2");
+  assert(!kimiArgs.includes("--add-dir"), `kimi must not emit --add-dir: ${JSON.stringify(kimiArgs)}`);
+  assert(!kimiArgs.includes("--append-system-prompt"));
+  assert.deepStrictEqual(kimiArgs, ["kimi", "-y", "-m", "kimi-k2"]);
+
+  // Regression for the "opus poisons everyone" bug: a legacy top-level model
+  // (claude-only alias) must NOT be injected onto codex/kimi runtimes.
+  const legacyKimi = { id: "lk", command: "kimi", args: ["-y"], model: "opus" };
+  const legacyKimiArgs = shellSplit(agentShellCommand(legacyKimi, { workspaceRoot }));
+  assert(!legacyKimiArgs.includes("opus"), `legacy opus must not reach kimi: ${JSON.stringify(legacyKimiArgs)}`);
+  assert(!legacyKimiArgs.includes("-m"), "no model flag when top-level model is suppressed for kimi");
+
+  const legacyCodex = { id: "lc", type: "codex", command: "codex", args: [], model: "opus" };
+  const legacyCodexArgs = shellSplit(agentShellCommand(legacyCodex, { workspaceRoot }));
+  assert(!legacyCodexArgs.some((p) => p === "model=opus"), `legacy opus must not reach codex: ${JSON.stringify(legacyCodexArgs)}`);
+
+  // ...but a legacy top-level model is still honored for the claude runtime.
+  const legacyClaude = { id: "lcl", command: "claude", model: "opus" };
+  const legacyClaudeArgs = shellSplit(agentShellCommand(legacyClaude, { workspaceRoot }));
+  assert.strictEqual(flagValue(legacyClaudeArgs, "--model"), "opus");
 
   const noModel = { ...claude };
   delete noModel.model;
+  delete noModel.runtimes;
+  delete noModel.default_runtime;
   const noModelArgs = shellSplit(agentShellCommand(noModel, { workspaceRoot }));
   assert(!noModelArgs.includes("--model"));
   assert(!noModelArgs.some((part) => part.startsWith("model=")));
 
+  // An unknown runtime family with a configured per-runtime model warns and skips
+  // (we only know how to inject model for claude/codex/kimi).
   const unknownWarnings = [];
   const unknown = {
     id: "foo",
     command: "foo",
     args: ["--flag"],
-    model: "opus"
+    default_runtime: "foo",
+    runtimes: { foo: { command: "foo", model: "whatever" } }
   };
   const unknownArgs = shellSplit(agentShellCommand(unknown, {
     workspaceRoot,

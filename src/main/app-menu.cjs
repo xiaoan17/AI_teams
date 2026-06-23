@@ -27,6 +27,8 @@ const { Menu, shell, app } = require("electron");
 // built at app.whenReady, before any renderer exists. If themes.js changes,
 // update this list — the app-menu smoke test asserts the ids resolve.
 const THEME_ITEMS = [
+  { id: "studioDark", label: "Studio Dark" },
+  { id: "studioLight", label: "Studio Light" },
   { id: "workbenchDark", label: "Workbench Dark" },
   { id: "cleanCode", label: "Clean Code" },
   { id: "paperTrail", label: "Paper Trail" }

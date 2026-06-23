@@ -253,7 +253,8 @@ function createTmuxViewManager({
       name: "xterm-256color",
       cols: state.cols,
       rows: state.rows,
-      env: { ...attachEnv, TERM: "xterm-256color" }
+      // Match the agent pty: xterm-256color terminfo + COLORTERM for truecolor.
+      env: { ...attachEnv, TERM: "xterm-256color", COLORTERM: "truecolor" }
     });
     attachHandlers(state);
     if (await waitForAttachedClient(state.viewSession)) {

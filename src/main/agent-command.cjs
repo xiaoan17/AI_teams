@@ -74,8 +74,9 @@ function resolveCodexInstructionsFile(agent) {
   return String(rt.instructionsFile || "RTK.md").trim() || "RTK.md";
 }
 
-function appendModelParts(parts, agent, command, options = {}) {
-  const model = typeof agent?.model === "string" ? agent.model.trim() : "";
+// model is resolved per-runtime by the caller (from resolveRuntime(...).model)
+// and passed in, because each CLI has its own alias space. Empty model = skip.
+function appendModelParts(parts, agent, command, model, options = {}) {
   if (!model) {
     return;
   }
@@ -84,6 +85,10 @@ function appendModelParts(parts, agent, command, options = {}) {
     parts.push("--model", model);
   } else if (family === "codex") {
     parts.push("-c", `model=${model}`);
+  } else if (family === "kimi") {
+    // Kimi (0.18+) takes `-m/--model <alias>`; unlike claude/codex it has no
+    // separate model-config flag.
+    parts.push("-m", model);
   } else {
     warn(options.logger, "agent runtime does not support model injection; skipping model", {
       agentId: agent?.id,
@@ -103,9 +108,22 @@ function agentCommandParts(agent, options = {}) {
     ? agent.args
     : rt.args;
   const parts = [command, ...args].filter(Boolean);
-  appendModelParts(parts, agent, command, options);
+  // Resolve model from the runtime that actually matches the launch command's
+  // family (which may differ from the default runtime if resolveCommand
+  // overrode it), so each CLI gets its own model alias and never a foreign one.
+  const launchFamily = commandFamily(agent, command);
+  const launchRt = launchFamily === rt.runtime ? rt : resolveRuntime(agent, launchFamily);
+  appendModelParts(parts, agent, command, launchRt.model, options);
   const crewDir = resolveCrewDir(agent, workspaceRoot);
   if (!crewDir) {
+    return parts;
+  }
+
+  // Kimi is run as a blank slate: it has no `--add-dir` flag and no
+  // system-prompt injection, so persona_dir cannot be wired in the way
+  // claude/codex do. Pushing --add-dir would make Kimi fail at launch, so we
+  // skip the entire crewDir injection block (parts already carry the model).
+  if (commandFamily(agent, command) === "kimi") {
     return parts;
   }
 
